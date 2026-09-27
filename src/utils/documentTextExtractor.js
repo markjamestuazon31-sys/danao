@@ -79,7 +79,12 @@ async function extractDocx(arrayBuffer) {
   const text = decodeEntities(
     xml
       .replace(/<w:tab\b[^>]*\/>/gi, "\t")
-      .replace(/<w:(?:br|cr)\b[^>]*\/>/gi, "\n")
+      // A <w:br/>/<w:cr/> is a manual line break WITHIN a paragraph (common
+      // in justified/wrapped or converted-from-PDF text, where Word records
+      // one break per visual line). It is not a new paragraph, so it must
+      // reflow as a space - treating it as "\n" (as before) shreds a single
+      // paragraph into one line per word once each line is its own block.
+      .replace(/<w:(?:br|cr)\b[^>]*\/>/gi, " ")
       .replace(/<\/w:p>/gi, "\n")
       .replace(/<\/w:tr>/gi, "\n")
       .replace(/<[^>]+>/g, ""),

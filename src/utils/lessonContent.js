@@ -1,3 +1,9 @@
+export function extractYoutubeId(url = "") {
+  const value = String(url).trim();
+  const match = value.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&]+)/);
+  return match ? match[1] : "";
+}
+
 function toText(value) {
   if (value === null || value === undefined) return "";
   if (typeof value === "string" || typeof value === "number") return String(value).trim();
@@ -5,6 +11,20 @@ function toText(value) {
     return String(value.text ?? value.label ?? value.value ?? value.title ?? "").trim();
   }
   return "";
+}
+
+// A line is treated as a heading/label for styling purposes only (never
+// merged or split) when it's a form label ("Name:", "Dear:"), an ALL CAPS
+// title, or a list/blank-field marker.
+export function isStandaloneLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^[_\-–—.]{3,}$/.test(trimmed)) return true; // blank fields / rules
+  if (/^(?:[-*•]|\(?\d+[.)]|\(?[a-hA-H][.)])\s+/.test(trimmed)) return true; // list items
+  if (/:$/.test(trimmed) && trimmed.length <= 70) return true; // "Dear:", "Name:", "Purpose:"
+  const letters = trimmed.replace(/[^A-Za-z]/g, "");
+  if (letters.length > 2 && letters === letters.toUpperCase()) return true; // ALL CAPS heading/title, any length
+  return false;
 }
 
 export function textArray(value) {
@@ -15,8 +35,12 @@ export function textArray(value) {
       .filter(Boolean);
   }
   if (typeof value === "string") {
+    // Faithful, 1:1 split: every non-blank line the teacher's editor shows
+    // becomes exactly one paragraph on the student page - nothing is
+    // merged, re-guessed, or reordered, so the two views always match.
     return value
-      .split(/\n{2,}|(?<=[.!?])\s+(?=[A-Z])/)
+      .replace(/\r\n/g, "\n")
+      .split(/\n+/)
       .map((item) => item.trim())
       .filter(Boolean);
   }
@@ -246,9 +270,11 @@ export function normalizeLesson(raw = {}) {
 
   const quizSource = readQuestionSource(raw.quiz).length
     ? readQuestionSource(raw.quiz)
-    : readQuestionSource(raw.assessment).length
-      ? readQuestionSource(raw.assessment)
-      : readQuestionSource(raw.questions);
+    : readQuestionSource(raw.lessonQuiz).length
+      ? readQuestionSource(raw.lessonQuiz)
+      : readQuestionSource(raw.assessment).length
+        ? readQuestionSource(raw.assessment)
+        : readQuestionSource(raw.questions);
 
   const practiceSource = readQuestionSource(raw.practice).length
     ? readQuestionSource(raw.practice)
@@ -259,10 +285,11 @@ export function normalizeLesson(raw = {}) {
   // In the Realtime-Database-only edition the full authorized lesson is read by
   // the browser, so a mastery item must retain a normalized answer. Legacy
   // answerIndex/answer/correctAnswer/correct formats are handled by resolveAnswer.
+  // Keep teacher-authored quiz as the source of truth.
+  // Do not replace missing teacher questions with generated fallback questions.
+  // This prevents students from seeing automatic questions instead of the teacher quiz.
   const quizQuestions = normalizeQuestionList(quizSource, "quiz");
-  const safeQuizQuestions = quizQuestions.length
-    ? quizQuestions.slice(0, 5)
-    : fallbackQuizQuestions(raw);
+  const safeQuizQuestions = quizQuestions;
   const quizSignatures = new Set(safeQuizQuestions.map(questionSignature));
 
   const explicitPracticeQuestions = normalizeQuestionList(practiceSource, "practice")
@@ -282,6 +309,8 @@ export function normalizeLesson(raw = {}) {
 
   return {
     ...raw,
+      youtubeUrl: raw.youtubeUrl || "",
+      youtubeId: extractYoutubeId(raw.youtubeUrl || ""),
     objectives: normalizedObjectives,
     discussion: discussion.length
       ? discussion

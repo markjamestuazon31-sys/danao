@@ -58,11 +58,29 @@ export async function getAuthorizedLearningContent({ type, contentId, profile })
 
   try {
     const node = type === "game" ? "games" : "lessons";
-    const snapshot = await get(ref(database, `${node}/${contentId}`));
-    if (!snapshot.exists()) {
+    let snapshot = await get(ref(database, `${node}/${contentId}`));
+    let contentValue = null;
+
+    if (snapshot.exists()) {
+      contentValue = snapshot.val();
+    } else {
+      // Compatibility path for content that was published to the catalog first.
+      const catalog = await get(ref(database, `publishedCatalog`));
+      if (catalog.exists()) {
+        for (const gradeNode of Object.values(catalog.val())) {
+          const collection = gradeNode?.[node] || {};
+          if (collection[contentId]) {
+            contentValue = collection[contentId];
+            break;
+          }
+        }
+      }
+    }
+
+    if (!contentValue) {
       throw new LearningAccessError("Learning content could not be loaded.", "not-found");
     }
-    const content = { id: contentId, type, ...snapshot.val() };
+    const content = { id: contentId, type, ...contentValue };
 
     // Realtime Database Rules enforce the same checks at the data boundary.
     // This client check provides a child-friendly error instead of a raw SDK error.

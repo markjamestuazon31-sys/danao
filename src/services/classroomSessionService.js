@@ -16,6 +16,16 @@ function safeKey(value, fallback) {
   return text(value, 100).replace(/[.#$\[\]/]/g, "_") || fallback;
 }
 
+function shuffleItems(items) {
+  return [...items].sort(() => Math.random() - 0.5);
+}
+
+function selectGameQuestions(game, questions) {
+  const pool = game?.randomizeQuestions === false ? questions : shuffleItems(questions);
+  const limit = Number(game?.questionLimit || pool.length);
+  return pool.slice(0, Math.max(1, limit));
+}
+
 function values(value) {
   if (Array.isArray(value)) return value;
   if (value && typeof value === "object") return Object.values(value);
@@ -172,7 +182,7 @@ export async function getClassroomActivities({ teacherId, teacherProfile, target
       grade: game.grade,
       section: game.section,
       classKey: game.classKey,
-      questions: normalizeGameQuestions(game),
+      questions: selectGameQuestions(game, normalizeGameQuestions(game)),
       updatedAt: number(game.updatedAt || game.publishedAt),
     }));
 
@@ -188,7 +198,7 @@ export async function getClassroomActivities({ teacherId, teacherProfile, target
       grade: quiz.grade,
       section: quiz.section,
       classKey: quiz.classKey,
-      questions: normalizeQuizQuestions(quiz),
+      questions: quiz.randomizeQuestions === false ? normalizeQuizQuestions(quiz) : shuffleItems(normalizeQuizQuestions(quiz)).slice(0, Number(quiz.questionLimit || normalizeQuizQuestions(quiz).length)),
       updatedAt: number(quiz.updatedAt || quiz.publishedAt),
     }));
 

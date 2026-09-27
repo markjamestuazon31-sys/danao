@@ -1,0 +1,273 @@
+/* ==========================================================================
+   Professional lesson UI: teacher document viewer + reading-to-quiz handoff.
+   Imported by pages/LessonDetails.jsx
+   ========================================================================== */
+
+.student-lesson {
+  font-family: Inter, system-ui, sans-serif;
+  color: #172033;
+}
+
+.lesson-reading-flow {
+  background: #fff;
+  border-radius: 20px;
+  padding: 32px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+}
+
+/* ---- Teacher document card ------------------------------------------- */
+
+.professional-document-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+  padding: 24px;
+  margin-top: 24px;
+}
+
+.professional-document-card__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.professional-document-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #eef2ff;
+  color: #4f46e5;
+  flex: none;
+}
+
+.professional-document-card__header h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #101828;
+}
+
+.professional-document-card__header small {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.professional-document-card__docx {
+  background: #f7f8ff;
+  border: 1px dashed #c7d2fe;
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.professional-document-card__docx p {
+  margin: 0;
+  color: #475569;
+  font-size: 15px;
+}
+
+.professional-document-frame {
+  width: 100%;
+  height: 900px;
+  border: 1px solid #d9def0;
+  border-radius: 14px;
+  background: white;
+}
+
+.professional-document-image {
+  width: 100%;
+  max-height: 900px;
+  object-fit: contain;
+  border-radius: 14px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.professional-document-text {
+  background: #fafbff;
+  border: 1px solid #e3e7f2;
+  border-radius: 14px;
+  padding: 24px;
+  max-height: 700px;
+  overflow-y: auto;
+}
+
+.professional-document-text p {
+  font-size: 16px;
+  line-height: 1.8;
+  color: #1f2937;
+  margin: 0 0 16px;
+}
+
+.professional-document-text p:last-child {
+  margin-bottom: 0;
+}
+
+.document-open-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 14px 22px;
+  border-radius: 12px;
+  background: #4f46e5;
+  color: white;
+  font-weight: 700;
+  text-decoration: none;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.document-open-button:hover {
+  background: #4338ca;
+  transform: translateY(-1px);
+}
+
+/* ---- "Done reading? go to the quiz/game" handoff ---------------------- */
+
+.lesson-continue-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 28px;
+  padding: 24px 28px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(79, 70, 229, 0.28);
+}
+
+.lesson-continue-cta > div > span {
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+
+.lesson-continue-cta h3 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.lesson-continue-cta p {
+  margin: 0;
+  font-size: 14.5px;
+  color: rgba(255, 255, 255, 0.9);
+  max-width: 46ch;
+}
+
+.lesson-continue-cta__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-radius: 14px;
+  background: #fff;
+  color: #4338ca;
+  font-weight: 800;
+  font-size: 15px;
+  text-decoration: none;
+  border: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.lesson-continue-cta__button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.18);
+}
+
+/* ---- Quiz step empty / redirect states -------------------------------- */
+
+.lesson-quiz-redirect,
+.lesson-quiz-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid #e3e7f2;
+  border-radius: 20px;
+  padding: 32px;
+}
+
+.lesson-quiz-redirect svg,
+.lesson-quiz-empty svg {
+  color: #4f46e5;
+}
+
+.lesson-quiz-redirect h3,
+.lesson-quiz-empty h3 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 800;
+  color: #101828;
+}
+
+.lesson-quiz-redirect p,
+.lesson-quiz-empty p {
+  margin: 0;
+  color: #475569;
+  font-size: 15px;
+  max-width: 60ch;
+}
+
+.lesson-quiz-redirect .lesson-continue-cta__button {
+  background: #4f46e5;
+  color: #fff;
+}
+
+/* ---- Quiz form polish --------------------------------------------------*/
+
+.lesson-quiz fieldset {
+  background: white;
+  border: 1px solid #dbe3f0;
+  border-radius: 18px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+
+.lesson-quiz legend {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.lesson-quiz label {
+  display: flex;
+  gap: 12px;
+  padding: 15px;
+  margin-top: 10px;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.lesson-primary-action {
+  width: 100%;
+  min-height: 54px;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+@media (max-width: 720px) {
+  .lesson-continue-cta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .lesson-continue-cta__button {
+    width: 100%;
+    justify-content: center;
+  }
+}

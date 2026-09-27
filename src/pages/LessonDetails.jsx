@@ -6,7 +6,6 @@ import {
   Check,
   CheckCircle2,
   ExternalLink,
-  FileText,
   Gamepad2,
   Lightbulb,
   ListChecks,
@@ -20,17 +19,19 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import "./LessonDetailsReadable.css";
+import "../styles/LessonDetailsProfessional.css";
 import { Link, useParams } from "react-router-dom";
 import LearningAccessState from "../components/student/LearningAccessState";
+import ProfessionalDocumentViewer from "../components/ProfessionalDocumentViewer";
 import VoiceSettings from "../components/student/VoiceSettings";
 import { useAuth } from "../context/AuthContext";
 import { getGradeExperience, subjectTone } from "../data/gradeExperience";
-import { normalizeLesson } from "../utils/lessonContent";
+import { normalizeLesson, isStandaloneLine } from "../utils/lessonContent";
 import { learningHref } from "../utils/studentProgress";
 import { useLearningPreferences } from "../context/LearningPreferencesContext";
 import { askLearningAssistant } from "../services/aiService";
 import {
-  getPublishedCatalogForGrade,
   normalizeProgress,
   subscribeUserProgress,
 } from "../services/dataService";
@@ -90,7 +91,16 @@ export default function LessonDetails() {
   const experience = getGradeExperience(lesson?.grade || profile?.gradeLevel);
   const lessonProgress = progress.lesson?.[id] || {};
   const practiceQuestions = normalizedLesson?.practiceQuestions || [];
-  const quizQuestions = normalizedLesson?.quizQuestions || [];
+  // The connected game (when the teacher created one for this lesson) is the
+  // live source of truth for the quiz. Fall back to the lesson's own quiz
+  // only when there is no connected game, or the game has no questions yet.
+  const quizQuestions = useMemo(() => (
+    (connectedGame?.questions?.length ? connectedGame.questions : null)
+    || normalizedLesson?.quizQuestions
+    || normalizedLesson?.quiz
+    || normalizedLesson?.questions
+    || []
+  ), [connectedGame, normalizedLesson]);
 
   useEffect(() => {
     let active = true;
@@ -129,21 +139,18 @@ export default function LessonDetails() {
   }, [id, isStudent, user?.uid]);
 
   useEffect(() => {
-    if (!normalizedLesson?.grade) return undefined;
+    const explicitId = normalizedLesson?.gameId || normalizedLesson?.connectedGameId;
+    if (!explicitId) { setConnectedGame(null); return undefined; }
     let active = true;
-    const connectedGrade = isStudent ? profile?.gradeLevel : normalizedLesson.grade;
-    getPublishedCatalogForGrade(connectedGrade, isStudent ? profile?.section : "")
-      .then((catalog) => {
-        if (!active) return;
-        const explicitId = normalizedLesson.gameId || normalizedLesson.connectedGameId;
-        const game = catalog.find((item) => item.type === "game" && item.id === explicitId)
-          || catalog.find((item) => item.type === "game" && item.subject === normalizedLesson.subject)
-          || null;
-        setConnectedGame(game);
-      })
-      .catch(() => {});
+    // Load the teacher's actual, live game record (not the thin catalog
+    // metadata) so the lesson always links to and quizzes from the real,
+    // up-to-date questions the teacher created for this lesson's game -
+    // even if the game was edited after the lesson was first saved.
+    getAuthorizedLearningContent({ type: "game", contentId: explicitId, profile })
+      .then((game) => { if (active) setConnectedGame(game); })
+      .catch(() => { if (active) setConnectedGame(null); });
     return () => { active = false; };
-  }, [isStudent, normalizedLesson, profile?.gradeLevel, profile?.section]);
+  }, [normalizedLesson?.gameId, normalizedLesson?.connectedGameId, profile]);
 
   async function goToStep(index) {
     const safeIndex = Math.max(0, Math.min(STEPS.length - 1, index));
@@ -180,11 +187,26 @@ export default function LessonDetails() {
     speak(correct ? `Excellent! ${questionItem.explanation}` : "Try again. Read the question and compare each choice.");
   }
 
+  function lessonReadyForQuiz() {
+    const record = progress.lesson?.[id] || {};
+    return Number(record.percent || 0) >= 70;
+  }
+
   async function submitQuiz(event) {
     event.preventDefault();
-    const answered = quizQuestions.filter((item) => quizAnswers[item.id] !== undefined).length;
+
+    if (!lessonReadyForQuiz()) {
+      setMessage("Please finish reading the lesson before taking the quiz.");
+      return;
+    }
+    if (!quizQuestions.length) {
+      setMessage("No teacher quiz was found for this lesson. Please ask the teacher to attach the quiz before publishing.");
+      return;
+    }
+
+    const answered = quizQuestions.filter((item) => quizAnswers[item.id] !== undefined && quizAnswers[item.id] !== "").length;
     if (answered < quizQuestions.length) {
-      setMessage("Answer every quiz question before submitting.");
+      setMessage(`Answer every quiz question before submitting (${answered}/${quizQuestions.length}).`);
       return;
     }
 
@@ -311,7 +333,7 @@ export default function LessonDetails() {
             <span>{normalizedLesson.subject} • {normalizedLesson.grade}</span>
             <h1>{normalizedLesson.title}</h1>
             <p>{normalizedLesson.description || "Teacher-approved interactive learning module."}</p>
-            <div className="lesson-header-v2__meta"><span><Sparkles size={15} /> +{experience.lessonXp} XP</span><span><Target size={15} /> {normalizedLesson.quizQuestions.length} quiz questions</span><span><BookOpenCheck size={15} /> {experience.difficulty}</span></div>
+            <div className="lesson-header-v2__meta"><span><Sparkles size={15} /> +{experience.lessonXp} XP</span>{connectedGame && <span><Target size={15} /> {connectedGame.questionLimit || connectedGame.questions?.length || "a scored"} game {connectedGame.questionLimit === 1 ? "question" : "questions"}</span>}<span><BookOpenCheck size={15} /> {experience.difficulty}</span></div>
           </div>
           <VisualScene lesson={normalizedLesson} />
         </div>
@@ -350,14 +372,79 @@ export default function LessonDetails() {
           {currentStep.id === "learn" && (
             <div className="lesson-reading-flow">
               {normalizedLesson.visualUrl && <img src={normalizedLesson.visualUrl} alt={normalizedLesson.visualAlt || `${normalizedLesson.title} learning visual`} />}
-              {normalizedLesson.discussion.map((paragraph, index) => <article key={`${paragraph}-${index}`}><span>{index + 1}</span><p>{paragraph}</p></article>)}
-              {normalizedLesson.material?.text && <section className="lesson-imported-material"><div><FileText size={20} /><h3>{normalizedLesson.material.name || "Imported teacher material"}</h3></div><p>{normalizedLesson.material.text}</p></section>}
+              {normalizedLesson.material?.url || normalizedLesson.material?.text ? (
+                <ProfessionalDocumentViewer material={normalizedLesson.material} />
+              ) : normalizedLesson.resourceUrl ? (
+                <article className="lesson-document-download">
+                  <a
+                    className="document-open-button"
+                    href={normalizedLesson.resourceUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    <ExternalLink size={18} /> Open lesson file
+                  </a>
+                </article>
+              ) : null}
+
+              {!normalizedLesson.material?.url && !normalizedLesson.material?.text && (
+                <article className="lesson-discussion">
+                  {normalizedLesson.discussion.map((paragraph, index) => (
+                    <p
+                      key={`${paragraph}-${index}`}
+                      className={isStandaloneLine(paragraph) ? "lesson-discussion__label" : undefined}
+                    >
+                      {paragraph}
+                    </p>
+                  ))}
+                </article>
+              )}
+              
+{normalizedLesson.youtubeId && (
+  <section className="lesson-video-card">
+    <h3>🎥 Teacher Video Explanation</h3>
+    <iframe
+      width="100%"
+      height="400"
+      src={`https://www.youtube.com/embed/${normalizedLesson.youtubeId}`}
+      title="Teacher lesson video"
+      allowFullScreen
+    />
+  </section>
+)}
+
+              {(connectedGame || quizQuestions.length > 0) && (
+                <aside className="lesson-continue-cta">
+                  <div>
+                    <span>FINISHED READING?</span>
+                    <h3>{connectedGame ? "Put it into practice" : "Take the mastery quiz"}</h3>
+                    <p>
+                      {connectedGame
+                        ? `Head over to "${connectedGame.title}" to practice what you just read.`
+                        : "Answer the teacher's quiz questions to show what you learned."}
+                    </p>
+                  </div>
+                  {connectedGame ? (
+                    <Link className="lesson-continue-cta__button" to={learningHref(connectedGame)}>
+                      <Gamepad2 size={18} /> Play the quiz game <ArrowRight size={16} />
+                    </Link>
+                  ) : (
+                    <button
+                      type="button"
+                      className="lesson-continue-cta__button"
+                      onClick={() => goToStep(STEPS.findIndex((step) => step.id === "quiz"))}
+                    >
+                      <ListChecks size={18} /> Go to quiz <ArrowRight size={16} />
+                    </button>
+                  )}
+                </aside>
+              )}
             </div>
           )}
 
           {currentStep.id === "examples" && (
             <div className="lesson-example-list">
-              {normalizedLesson.examples.map((example, index) => <article key={`${example}-${index}`}><span>Example {index + 1}</span><div><Lightbulb size={22} /><p>{example}</p></div></article>)}
+              {normalizedLesson.examples.map((example, index) => <article key={`${example}-${index}`}><div><Lightbulb size={22} /><p>{example}</p></div></article>)}
               {normalizedLesson.activities.length > 0 && <article className="lesson-activity-callout"><Sparkles size={24} /><div><h3>Teacher activity</h3>{normalizedLesson.activities.slice(0, 3).map((activity, index) => <p key={index}>{typeof activity === "string" ? activity : activity.description || activity.instructions || activity.title}</p>)}</div></article>}
             </div>
           )}
@@ -383,9 +470,28 @@ export default function LessonDetails() {
             </div>
           )}
 
-          {currentStep.id === "quiz" && (
+          {currentStep.id === "quiz" && quizQuestions.length === 0 && connectedGame && (
+            <div className="lesson-quiz-redirect">
+              <ListChecks size={28} />
+              <h3>This lesson's quiz is the "{connectedGame.title}" game</h3>
+              <p>Your teacher built this lesson's mastery check as a scored game. Play it to complete this step and earn your score.</p>
+              <Link className="lesson-continue-cta__button" to={learningHref(connectedGame)}>
+                <Gamepad2 size={18} /> Play {connectedGame.title} <ArrowRight size={16} />
+              </Link>
+            </div>
+          )}
+
+          {currentStep.id === "quiz" && quizQuestions.length === 0 && !connectedGame && (
+            <div className="lesson-quiz-empty">
+              <ListChecks size={28} />
+              <h3>No quiz has been attached yet</h3>
+              <p>Ask your teacher to attach a quiz or a connected game to this lesson before it is marked ready for mastery checking.</p>
+            </div>
+          )}
+
+          {currentStep.id === "quiz" && quizQuestions.length > 0 && (
             <form className="lesson-quiz" onSubmit={submitQuiz}>
-              <div className="lesson-quiz__intro"><ListChecks size={24} /><div><h3>Lesson mastery quiz</h3><p>Answer every question. A score of 70% shows strong mastery.</p></div></div>
+              <div className="lesson-quiz__intro"><ListChecks size={24} /><div><h3>{normalizedLesson?.title || "Learning Challenge"}</h3><p>Answer every question. A score of 70% shows strong mastery.</p></div></div>
               {quizQuestions.map((item, index) => (
                 <fieldset key={item.id}><legend>{index + 1}. {item.prompt}</legend>{item.choices.map((choice) => <label key={choice}><input type="radio" name={item.id} checked={quizAnswers[item.id] === choice} onChange={() => { setQuizAnswers((current) => ({ ...current, [item.id]: choice })); setQuizResult(null); }} /><span>{choice}</span></label>)}{quizResult && (() => {
                   const verifiedFeedback = quizResult.feedback?.find((entry) => entry.id === item.id);

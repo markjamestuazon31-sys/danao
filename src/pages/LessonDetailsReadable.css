@@ -1,0 +1,154 @@
+/* Student lesson readability patch */
+.student-lesson {
+  font-size: 16px;
+  line-height: 1.7;
+  color: #172033;
+}
+
+.lesson-content-panel,
+.lesson-side-panel,
+.lesson-question-card,
+.lesson-quiz fieldset,
+.lesson-imported-material {
+  font-size: 16px;
+}
+
+.lesson-content-panel h1,
+.lesson-content-panel h2,
+.lesson-content-panel h3,
+.lesson-content-panel legend {
+  color: #101828;
+  letter-spacing: .01em;
+}
+
+.lesson-content-panel p,
+.lesson-content-panel li,
+.lesson-quiz label span,
+.lesson-imported-material p {
+  font-size: 17px;
+  line-height: 1.8;
+}
+
+.lesson-reading-flow article {
+  background: #fff;
+  border-radius: 14px;
+  padding: 22px;
+  margin-bottom: 18px;
+}
+
+/* The lesson discussion reads as one continuous document (like a book page)
+   instead of one separate card per line. */
+.lesson-discussion {
+  display: flex;
+  flex-direction: column;
+  max-width: 68ch;
+  margin: 0 auto;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.lesson-discussion p {
+  margin: 0 0 1em;
+  font-size: 17px;
+  line-height: 1.75;
+  color: #1f2937;
+  text-align: justify;
+  hyphens: auto;
+}
+
+.lesson-discussion p:last-child {
+  margin-bottom: 0;
+}
+
+/* Short form labels / headings pulled out of the imported document
+   ("Dear:", "PART I: RESPONDENT INFORMATION", list markers, blank fields)
+   are set apart from body text instead of flowing as a paragraph. */
+.lesson-discussion p.lesson-discussion__label {
+  margin: 1.4em 0 0.6em;
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4338ca;
+  text-align: left;
+  hyphens: none;
+}
+
+.lesson-discussion p.lesson-discussion__label:first-child {
+  margin-top: 0;
+}
+
+/* The "learn" step shows a compact download link for the teacher's original
+   lesson file, sitting above the full reading text. */
+.lesson-document-download {
+  display: flex;
+  margin-bottom: 20px;
+}
+
+.lesson-document-download:empty {
+  display: none;
+  margin-bottom: 0;
+}
+
+.lesson-document-viewer iframe {
+  min-height: 850px;
+  border: 1px solid #d9def0;
+  border-radius: 12px;
+  background: white;
+}
+
+.lesson-quiz fieldset {
+  border: 1px solid #d9def0;
+  border-radius: 16px;
+  padding: 22px;
+  margin: 18px 0;
+  background: #fff;
+}
+
+.lesson-quiz legend {
+  width: 100%;
+  font-size: 18px;
+  font-weight: 700;
+  padding-bottom: 14px;
+}
+
+.lesson-quiz label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 12px 16px;
+  margin: 8px 0;
+  border: 1px solid #e3e7f2;
+  border-radius: 12px;
+  cursor: pointer;
+  background: #fafbff;
+}
+
+.lesson-quiz input[type=radio] {
+  width: 18px;
+  height: 18px;
+}
+
+.lesson-primary-action {
+  min-height: 52px;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.lesson-message {
+  font-size: 16px;
+  font-weight: 600;
+  padding: 14px 18px;
+}
+
+.teacher-document-download {
+  padding: 24px;
+  border-radius: 12px;
+  background: #f7f8ff;
+}
+
+.teacher-document-download a {
+  font-size: 17px;
+  font-weight: 700;
+}

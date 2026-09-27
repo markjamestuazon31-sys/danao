@@ -253,6 +253,7 @@ export default function CameraMathGame({ initialActivity = "math" }) {
       } else {
         setQuestionIndex((value) => value + 1);
         setStageKey((value) => value + 1);
+        lockedRef.current = false;
         setFeedback(null);
         lockedRef.current = false;
       }

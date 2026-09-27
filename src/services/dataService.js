@@ -43,6 +43,7 @@ const CATALOG_FIELDS = [
   "thumbnail",
   "coverEmoji",
   "competency",
+  "questionLimit",
   "section",
   "sectionKey",
   "classKey",
@@ -51,6 +52,8 @@ const CATALOG_FIELDS = [
   "route",
   "updatedAt",
   "createdAt",
+  "publishAt",
+  "expiresAt",
 ];
 
 function toRealtimeData(value) {
@@ -66,6 +69,15 @@ function normalizeSnapshot(snapshot, type) {
   }));
 }
 
+function isCatalogActive(item) {
+  const now = Date.now();
+  const publishAt = Number(item.publishAt || 0);
+  const expiresAt = Number(item.expiresAt || 0);
+  if (publishAt && now < publishAt) return false;
+  if (expiresAt && now > expiresAt) return false;
+  return true;
+}
+
 function flattenPublishedCatalog(value) {
   if (!value || typeof value !== "object") return [];
   const results = [];
@@ -77,7 +89,7 @@ function flattenPublishedCatalog(value) {
       results.push({ id, type: "game", status: "published", ...item });
     });
   });
-  return results;
+  return results.filter(isCatalogActive);
 }
 
 function mergeSystemCatalog(items, gradeLevel) {
@@ -93,7 +105,7 @@ function filterCatalogForSection(items, gradeLevel, sectionValue) {
   return items.filter((item) => item.source === "system" || contentMatchesStudentClass(item, {
     gradeLevel,
     section,
-  }));
+  }) || normalizeSection(item.sectionKey) === section);
 }
 
 function catalogMetadata(item, type) {
@@ -101,19 +113,30 @@ function catalogMetadata(item, type) {
     item.grade || item.gradeLevel,
     normalizeSection(item.section, ALL_SECTIONS),
   );
+
   const result = {
     ...targetClass,
+    id: item.id || null,
     type,
     status: "published",
     grade: normalizeGradeLevel(item.grade || item.gradeLevel),
+    gradeLevel: targetClass.grade,
+    teacherId: item.teacherId || "",
+    publishAt: item.publishAt || null,
+    expiresAt: item.expiresAt || null,
+    createdAt: item.createdAt || Date.now(),
+    updatedAt: item.updatedAt || Date.now(),
   };
+
   CATALOG_FIELDS.forEach((field) => {
     if (item[field] !== undefined && item[field] !== null && item[field] !== "") {
       result[field] = item[field];
     }
   });
+
   result.grade = normalizeGradeLevel(result.grade || result.gradeLevel);
-  delete result.gradeLevel;
+  result.gradeLevel = result.grade;
+
   return toRealtimeData(result);
 }
 
@@ -287,7 +310,10 @@ async function saveTeacherContent(type, teacherId, content) {
   const now = Date.now();
   const targetClass = classFields(content.grade || content.gradeLevel, content.section);
   const subject = ensureSubjectForGrade(targetClass.grade, content.subject);
-  const requestedStatus = content.status === "published" ? "published" : "draft";
+  const requestedStatus =
+    content.status === "published" || content.status === "scheduled"
+      ? "published"
+      : "draft";
   const record = toRealtimeData({
     ...content,
     ...targetClass,
@@ -337,10 +363,35 @@ export async function deleteTeacherContent(teacherId, type, contentId) {
 }
 
 export async function updateLesson(lessonId, changes) {
-  if (!lessonId) throw new Error("Lesson ID is required.");
-  const cleanChanges = toRealtimeData({ ...changes, updatedAt: Date.now() });
-  await update(ref(database, `lessons/${lessonId}`), cleanChanges);
-  return cleanChanges;
+  return updateTeacherContent("lesson", lessonId, changes);
+}
+
+export async function updateGame(gameId, changes) {
+  return updateTeacherContent("game", gameId, changes);
+}
+
+export async function updateTeacherContent(type, contentId, changes) {
+  if (!contentId) throw new Error("Learning content ID is required.");
+  if (!["lesson", "game"].includes(type)) throw new Error("Invalid learning content type.");
+
+  const node = type === "game" ? "games" : "lessons";
+  const snapshot = await get(ref(database, `${node}/${contentId}`));
+  if (!snapshot.exists()) throw new Error("Learning content was not found.");
+
+  const current = snapshot.val();
+  const next = toRealtimeData({ ...current, ...changes, updatedAt: Date.now() });
+  const updates = { [`${node}/${contentId}`]: next };
+
+  const gradeKey = next.gradeKey || gradeToKey(next.grade || next.gradeLevel);
+  const plural = type === "game" ? "games" : "lessons";
+  if (next.status === "published") {
+    updates[`publishedCatalog/${gradeKey}/${plural}/${contentId}`] = catalogMetadata(next, type);
+  } else {
+    updates[`publishedCatalog/${gradeKey}/${plural}/${contentId}`] = null;
+  }
+
+  await update(ref(database), updates);
+  return { id: contentId, type, ...next };
 }
 
 export async function saveQuiz(teacherId, quiz) {
