@@ -297,7 +297,7 @@ export async function getPublishedCameraProgramsForStudent(profile) {
   if (!classKey) return [];
   const snapshot = await get(ref(database, `cameraPublished/${classKey}`));
   if (!snapshot.exists()) return [];
-  return Object.entries(snapshot.val()).filter(([track]) => track === "math" || track === "english").flatMap(([track, levels]) => Object.entries(levels || {}).map(([levelKey, record]) => normalizeProgram(record, {
+  return Object.entries(snapshot.val()).flatMap(([track, levels]) => Object.entries(levels || {}).map(([levelKey, record]) => normalizeProgram(record, {
     classKey, track, level: Number(levelKey.replace(/\D/g, "")) || 1,
   }))).filter((program) => program?.status === "published");
 }
