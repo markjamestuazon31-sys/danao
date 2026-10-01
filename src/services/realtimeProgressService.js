@@ -2,6 +2,9 @@ import { get, push, ref, runTransaction, update } from "firebase/database";
 import { auth, database } from "../firebase/firebaseConfig";
 import { getGradeExperience, normalizeGradeLevel } from "../data/gradeExperience";
 import { normalizeLesson } from "../utils/lessonContent";
+import { isOriginalDocumentLesson } from "../utils/originalLessonMaterial";
+import { isContentAvailable } from "../utils/contentPublication";
+import { contentMatchesStudentClass } from "../data/schoolClasses";
 
 const LESSON_STEPS = Object.freeze({
   overview: 10,
@@ -87,7 +90,7 @@ async function studentContext(type, contentId) {
   const content = { id: contentId, type, ...contentSnapshot.val() };
   const contentGrade = normalizeGradeLevel(content.grade || content.gradeLevel);
   if (profile.role !== "student" || profile.status !== "active") throw new Error("An active student account is required.");
-  if (content.status !== "published" || contentGrade !== grade) {
+  if (!isContentAvailable(content) || !contentMatchesStudentClass(content, profile)) {
     throw new Error(`This ${type} is not assigned to your ${grade} profile.`);
   }
   return { uid: currentUser.uid, profile: { ...profile, gradeLevel: grade }, content: { ...content, grade: contentGrade } };
@@ -119,7 +122,7 @@ export async function saveLessonCheckpoint(lessonId, step) {
             subject: lesson.subject || "General",
             grade: profile.gradeLevel,
             startedAt: existing.startedAt || now,
-            percent: Math.min(99, Math.max(number(existing.percent), LESSON_STEPS[normalizedStep])),
+            percent: existing.completed ? 100 : Math.min(99, Math.max(number(existing.percent), LESSON_STEPS[normalizedStep])),
             currentStep: normalizedStep,
             updatedAt: now,
           },
@@ -148,6 +151,55 @@ export async function saveLessonCheckpoint(lessonId, step) {
   } catch (error) {
     throw friendlyError(error, "Lesson progress could not be saved.");
   }
+}
+
+/** Original-document lessons do not require invented practice/reflection steps.
+ * A teacher-authored quiz/game remains a separate, explicit completion condition.
+ * Rules must independently protect progress and class access on the server.
+ */
+export async function recordDocumentReading(lessonId) {
+  try {
+    const { uid, profile, content: lesson } = await studentContext("lesson", lessonId);
+    if (!isOriginalDocumentLesson(lesson)) throw new Error("This is not a document lesson.");
+    const hasQuiz = normalizeLesson(lesson).quizQuestions.length > 0;
+    const linkedGameId = lesson.gameId || lesson.connectedGameId;
+    const now = Date.now(); const eventId = nextEventId(uid);
+    const reward = getGradeExperience(profile.gradeLevel).lessonXp;
+    let awardedXp = 0; let complete = false;
+    const transaction = await runTransaction(ref(database, `progress/${uid}`), (value) => {
+      const root = value || {}; const existing = root.lesson?.[lessonId] || {};
+      awardedXp = 0;
+      const assessmentDone = hasQuiz
+        ? Math.max(number(existing.bestQuizScore), number(existing.lastQuizScore)) >= 70
+        : linkedGameId ? Boolean(root.game?.[linkedGameId]?.completedAt) : true;
+      complete = Boolean(existing.completed || assessmentDone);
+      const firstCompletion = complete && !existing.completed;
+      const firstRead = !existing.readingCompletedAt;
+      if (!firstCompletion && !firstRead) return root;
+      awardedXp = firstCompletion ? reward : 0;
+      const summary = updateStreak(root.summary || {}, now);
+      return {
+        ...root,
+        lesson: { ...(root.lesson || {}), [lessonId]: {
+          ...existing, title: lesson.title || "Lesson document", subject: lesson.subject || "General", grade: profile.gradeLevel,
+          startedAt: existing.startedAt || now, readingCompletedAt: existing.readingCompletedAt || now,
+          percent: complete ? 100 : Math.max(number(existing.percent), 70),
+          currentStep: complete ? "challenge" : "learn", updatedAt: now,
+          ...(complete ? { completed: true, completedAt: existing.completedAt || now, xpEarned: number(existing.xpEarned) + awardedXp } : {}),
+        } },
+        activity: addActivity(root.activity, eventId, {
+          eventType: firstCompletion ? "lesson_completed" : "lesson_read", contentType: "lesson", contentId: lessonId,
+          title: lesson.title || "Lesson document", subject: lesson.subject || "General", grade: profile.gradeLevel,
+          status: firstCompletion ? "Lesson completed" : "Original lesson read", xpEarned: awardedXp, timestamp: now,
+        }),
+        summary: { ...summary, totalXp: number(summary.totalXp) + awardedXp,
+          lessonsCompleted: number(summary.lessonsCompleted) + (firstCompletion ? 1 : 0),
+          subjects: { ...subjectMap(summary.subjects), [lesson.subject || "General"]: true }, updatedAt: now },
+      };
+    });
+    if (!transaction.committed) throw new Error("Your reading progress was not saved. Please try again.");
+    return { lessonId, read: true, completed: complete, xpAwarded: awardedXp };
+  } catch (error) { throw friendlyError(error, "Your reading progress could not be saved."); }
 }
 
 export async function recordLessonQuizAttempt(lessonId, answers) {

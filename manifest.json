@@ -1,0 +1,80 @@
+{
+  "patch": "original-document-lessons-professional-ui",
+  "version": "1.0.0",
+  "baseArchive": "assets.zip",
+  "dependency": {
+    "docx-preview": "0.3.6"
+  },
+  "files": [
+    {
+      "path": "components/ProfessionalDocumentViewer.jsx",
+      "sha256": "205e4820df123bb80cab319378fea533a57ccfe376b2955b435a4be146640b08",
+      "originalSha256": "ae84ff83b75ba767b190facbdae6df8a50e81c9f23c5d821a8437bd8ca55ac9b"
+    },
+    {
+      "path": "components/student/DocumentLessonPage.jsx",
+      "sha256": "45f47e8e953d36cccd6a14d7d41314850b941d853cc145c44efb8658e7ca1625",
+      "originalSha256": null
+    },
+    {
+      "path": "pages/LearningContentStudio.jsx",
+      "sha256": "db29f3d731af52da3b8c6866a88cb03665a27e280d6b7a1dac5da97be8b733bb",
+      "originalSha256": "7473f4156b33940494d4592a2990f89d4d121c0d8166869e2b0a7ac11f7b3382"
+    },
+    {
+      "path": "pages/LessonDetails.jsx",
+      "sha256": "d7c764dfb80c3f1335e2346da18845a170495c1044aa2932a202f58a540404ad",
+      "originalSha256": "4a7d529333407247097c15a8d6a23ffb7906b2d6fe6c009dc31167983abf2c31"
+    },
+    {
+      "path": "pages/TeacherDashboard.jsx",
+      "sha256": "1e8c4d960ce1de17fb3a0e494f1d133057c9315dbaa9895842ebe30a578b5c62",
+      "originalSha256": "519689bee8aa17a0863c62120996a435b9e39de19030947c0c9f03e1bb439927"
+    },
+    {
+      "path": "services/dataService.js",
+      "sha256": "787049684adb727fde35ebb94e50f4c70e28861bde16a650add13231d091eedf",
+      "originalSha256": "db5ff4594529bebb80b7bfc331f52533bd955c02ca1c77839395d2197eab66b2"
+    },
+    {
+      "path": "services/learningContentService.js",
+      "sha256": "db378b2bd6776e2c8a7c34ad99b442bfffa64415e403581849cc34fdc654cfc2",
+      "originalSha256": "266ccec7483806c4119f111da85ccbbecea18234ef2afc84375297982b1c1f9a"
+    },
+    {
+      "path": "services/realtimeProgressService.js",
+      "sha256": "812926fe722725e59094d88b7f9062e6cff767121e452f713a50992e0cc5e241",
+      "originalSha256": "2421cacc772cffd5c4973d01fd78c6c93198cd5068d524c7846a67ee88b4eea7"
+    },
+    {
+      "path": "styles/document-lesson-professional.css",
+      "sha256": "ba2a20adf8ab338bf91ec14970f8f68161486a511ce1f08b82e32f0a1aa82856",
+      "originalSha256": null
+    },
+    {
+      "path": "styles/original-document-reader.css",
+      "sha256": "cf240a4214c555733aa3610af88644e6f3378cee794720dc73b220c5d81d0e4b",
+      "originalSha256": null
+    },
+    {
+      "path": "styles/publisher-professional.css",
+      "sha256": "49f86091b41f502f98b06d7d85cf20068700df6d5b42a7e089b18eabc65cd9b7",
+      "originalSha256": null
+    },
+    {
+      "path": "utils/contentPublication.js",
+      "sha256": "aeac0d11243d317927c6e6060ca767ec1f735899816a505028c0aadfe59f7cce",
+      "originalSha256": null
+    },
+    {
+      "path": "utils/originalLessonMaterial.js",
+      "sha256": "70bdceb15acb523d47233e6c492a394a852b32a7df28d1735cad06067840a968",
+      "originalSha256": null
+    },
+    {
+      "path": "utils/studentProgress.js",
+      "sha256": "b976c31ebfbb5d743ba6ad068227466a49cf12265a3e7835eda26461e4e79351",
+      "originalSha256": "dfd0ee3fb7e16f8c0d58aa4ad6394513496c2f317deba60b4c2e08f73c9b2f35"
+    }
+  ]
+}

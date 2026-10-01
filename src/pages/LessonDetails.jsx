@@ -24,6 +24,8 @@ import "../styles/LessonDetailsProfessional.css";
 import { Link, useParams } from "react-router-dom";
 import LearningAccessState from "../components/student/LearningAccessState";
 import ProfessionalDocumentViewer from "../components/ProfessionalDocumentViewer";
+import DocumentLessonPage from "../components/student/DocumentLessonPage";
+import { isOriginalDocumentLesson } from "../utils/originalLessonMaterial";
 import VoiceSettings from "../components/student/VoiceSettings";
 import { useAuth } from "../context/AuthContext";
 import { getGradeExperience, subjectTone } from "../data/gradeExperience";
@@ -35,7 +37,7 @@ import {
   normalizeProgress,
   subscribeUserProgress,
 } from "../services/dataService";
-import { getAuthorizedLearningContent } from "../services/learningContentService";
+import { subscribeAuthorizedLearningContent } from "../services/learningContentService";
 import {
   completeLessonActivity,
   recordLessonQuizAttempt,
@@ -91,16 +93,10 @@ export default function LessonDetails() {
   const experience = getGradeExperience(lesson?.grade || profile?.gradeLevel);
   const lessonProgress = progress.lesson?.[id] || {};
   const practiceQuestions = normalizedLesson?.practiceQuestions || [];
-  // The connected game (when the teacher created one for this lesson) is the
-  // live source of truth for the quiz. Fall back to the lesson's own quiz
-  // only when there is no connected game, or the game has no questions yet.
-  const quizQuestions = useMemo(() => (
-    (connectedGame?.questions?.length ? connectedGame.questions : null)
-    || normalizedLesson?.quizQuestions
-    || normalizedLesson?.quiz
-    || normalizedLesson?.questions
-    || []
-  ), [connectedGame, normalizedLesson]);
+  // Use the same saved teacher quiz that recordLessonQuizAttempt grades.
+  // The independently editable connected game is a separate activity.
+  const quizQuestions = normalizedLesson?.quizQuestions || [];
+
 
   useEffect(() => {
     let active = true;
@@ -108,24 +104,12 @@ export default function LessonDetails() {
     setLoadError(null);
     setLesson(null);
 
-    getAuthorizedLearningContent({ type: "lesson", contentId: id, profile })
-      .then((authorizedLesson) => {
-        if (!active) return;
-        setLesson(authorizedLesson);
-      })
-      .catch((error) => {
-        if (!active) return;
-        console.error("Unable to load protected lesson:", error);
-        setLoadError(error);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    const unsubscribe = subscribeAuthorizedLearningContent({ type: "lesson", contentId: id, profile },
+      (authorizedLesson) => { if (active) { setLesson(authorizedLesson); setLoadError(null); setLoading(false); } },
+      (error) => { if (active) { setLesson(null); setLoadError(error); setLoading(false); } },
+    );
+    return () => { active = false; unsubscribe(); stopSpeaking(); };
 
-    return () => {
-      active = false;
-      stopSpeaking();
-    };
   }, [id, profile, stopSpeaking]);
 
   useEffect(() => {
@@ -142,14 +126,15 @@ export default function LessonDetails() {
     const explicitId = normalizedLesson?.gameId || normalizedLesson?.connectedGameId;
     if (!explicitId) { setConnectedGame(null); return undefined; }
     let active = true;
-    // Load the teacher's actual, live game record (not the thin catalog
-    // metadata) so the lesson always links to and quizzes from the real,
-    // up-to-date questions the teacher created for this lesson's game -
-    // even if the game was edited after the lesson was first saved.
-    getAuthorizedLearningContent({ type: "game", contentId: explicitId, profile })
-      .then((game) => { if (active) setConnectedGame(game); })
-      .catch(() => { if (active) setConnectedGame(null); });
-    return () => { active = false; };
+    setConnectedGame(null);
+    // The game link follows the live full game record. The lesson quiz retains
+    // its own saved teacher-authored snapshot, matching the grading service.
+    const unsubscribe = subscribeAuthorizedLearningContent({ type: "game", contentId: explicitId, profile },
+      (game) => { if (active) setConnectedGame(game); },
+      () => { if (active) setConnectedGame(null); },
+    );
+    return () => { active = false; unsubscribe(); };
+
   }, [normalizedLesson?.gameId, normalizedLesson?.connectedGameId, profile]);
 
   async function goToStep(index) {
@@ -195,7 +180,7 @@ export default function LessonDetails() {
   async function submitQuiz(event) {
     event.preventDefault();
 
-    if (!lessonReadyForQuiz()) {
+    if (isStudent && !lessonReadyForQuiz()) {
       setMessage("Please finish reading the lesson before taking the quiz.");
       return;
     }
@@ -317,6 +302,10 @@ export default function LessonDetails() {
         role={profile?.role}
       />
     );
+  }
+
+  if (isOriginalDocumentLesson(lesson)) {
+    return <DocumentLessonPage key={id} lesson={lesson} connectedGame={connectedGame} progress={progress} />;
   }
 
   const currentStep = STEPS[activeStep];

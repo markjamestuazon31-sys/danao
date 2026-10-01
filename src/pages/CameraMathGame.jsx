@@ -46,6 +46,10 @@ function normalizeActivity(value) {
   return "math";
 }
 
+function shuffleQuestions(items) {
+  return [...items].sort(() => Math.random() - 0.5);
+}
+
 function activityDetails(activity) {
   if (activity === "english") {
     return {
@@ -141,8 +145,10 @@ export default function CameraMathGame({ initialActivity = "math" }) {
   const currentProgramAvailable = Boolean(currentProgram
     && (activity !== "math" || currentProgram.weekKey === learningWeek.key));
   const questions = useMemo(
-    () => currentProgramAvailable ? cameraProgramQuestions(currentProgram) : [],
-    [currentProgram, currentProgramAvailable],
+    () => currentProgramAvailable
+      ? shuffleQuestions(cameraProgramQuestions(currentProgram)).slice(0, ITEMS_PER_LEVEL)
+      : [],
+    [currentProgram, currentProgramAvailable, level, activity],
   );
   const question = questions[questionIndex];
 

@@ -1,5 +1,18 @@
 function escapePdfText(value) {
-  return String(value ?? "").replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)").replace(/[^\x20-\x7E]/g, "");
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/[^\x20-\x7E]/g, "");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function generateCertificate({ studentName, title, date = new Date() }) {
@@ -31,47 +44,52 @@ export function generateCertificate({ studentName, title, date = new Date() }) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function pdfText(text, x, y, size = 10, bold = false) {
-  return `BT /${bold ? "F2" : "F1"} ${size} Tf 0 0 0 rg ${x} ${y} Td (${escapePdfText(text)}) Tj ET`;
-}
-
-function pdfLine(x1, y1, x2, y2, width = 0.6) {
-  return `${width} w ${x1} ${y1} m ${x2} ${y2} l S`;
-}
-
-function downloadPortraitPdf(content, filename) {
-  const objects = [
-    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
-    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
-    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >> endobj",
-    `4 0 obj << /Length ${content.length} >> stream\n${content}\nendstream endobj`,
-    "5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
-    "6 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj",
-  ];
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  objects.forEach((object) => { offsets.push(pdf.length); pdf += `${object}\n`; });
-  const xref = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (let index = 1; index < offsets.length; index += 1) pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
-  pdf += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
-  const blob = new Blob([pdf], { type: "application/pdf" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 function periodNumber(value) {
   const match = String(value || "").match(/[1-4]/);
   return match ? Number(match[0]) : 1;
 }
 
+function subjectRowsForHtml(subjects, scoreMap, rowAverages) {
+  return subjects.map((subject) => {
+    const score1 = scoreMap[`${subject}|1`];
+    const score2 = scoreMap[`${subject}|2`];
+    const score3 = scoreMap[`${subject}|3`];
+    const score4 = scoreMap[`${subject}|4`];
+    const finalScore = rowAverages[subject];
+    return `
+      <tr>
+        <td class="left">${escapeHtml(subject)}</td>
+        <td>${Number.isFinite(score1) ? escapeHtml(score1) : "-"}</td>
+        <td>${Number.isFinite(score2) ? escapeHtml(score2) : "-"}</td>
+        <td>${Number.isFinite(score3) ? escapeHtml(score3) : "-"}</td>
+        <td>${Number.isFinite(score4) ? escapeHtml(score4) : "-"}</td>
+        <td class="final-cell">${Number.isFinite(finalScore) ? escapeHtml(finalScore) : "-"}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function performanceRemark(generalAverage) {
+  if (generalAverage >= 90) return "Outstanding";
+  if (generalAverage >= 85) return "Very Satisfactory";
+  if (generalAverage >= 80) return "Satisfactory";
+  if (generalAverage >= 75) return "Fairly Satisfactory";
+  return "Did Not Meet Expectations";
+}
+
+function openPrintWindow(title, html) {
+  const printWindow = window.open("", "_blank", "width=1024,height=900");
+  if (!printWindow) throw new Error("Allow pop-ups to generate the report card.");
+  printWindow.opener = null;
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>${html}</head></html>`);
+  printWindow.document.close();
+}
+
 export function generateReportCard({ student, grades, schoolYear, schoolName = "Jidanao Elementary School" }) {
   const selected = (grades || []).filter((grade) => !schoolYear || grade.schoolYear === schoolYear);
   if (!selected.length) throw new Error("No released grades are available for the selected school year.");
+
   const subjects = [...new Set(selected.map((grade) => grade.subject))].sort();
   const scoreMap = Object.fromEntries(selected.map((grade) => [`${grade.subject}|${periodNumber(grade.period)}`, Number(grade.score)]));
   const rowAverages = Object.fromEntries(subjects.map((subject) => {
@@ -80,69 +98,336 @@ export function generateReportCard({ student, grades, schoolYear, schoolName = "
   }));
   const allScores = selected.map((grade) => Number(grade.score)).filter(Number.isFinite);
   const generalAverage = allScores.length ? Math.round((allScores.reduce((sum, value) => sum + value, 0) / allScores.length) * 10) / 10 : 0;
-  const now = new Date();
-  const commands = [
-    "0.12 0.28 0.62 RG",
-    pdfText("REPUBLIC OF THE PHILIPPINES", 215, 805, 8, false),
-    pdfText(schoolName.toUpperCase(), Math.max(65, 298 - schoolName.length * 4.1), 784, 18, true),
-    pdfText("LEARNER ACADEMIC REPORT CARD", 174, 760, 14, true),
-    pdfLine(45, 746, 550, 746, 1.2),
-    pdfText("Learner:", 50, 718, 9, true),
-    pdfText(student?.name || "Student", 100, 718, 11, true),
-    pdfText("Grade and Section:", 335, 718, 9, true),
-    pdfText(`${student?.gradeLevel || student?.grade || ""} - ${student?.section || ""}`, 430, 718, 10, false),
-    pdfText("School Year:", 50, 696, 9, true),
-    pdfText(schoolYear || selected[0]?.schoolYear || "Current", 116, 696, 10, false),
-    pdfText("Generated:", 335, 696, 9, true),
-    pdfText(now.toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" }), 395, 696, 9, false),
-  ];
+  const finalRemark = performanceRemark(generalAverage);
+  const generatedAt = new Date().toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" });
+  const learnerName = student?.name || "Student";
+  const gradeSection = `${student?.gradeLevel || student?.grade || ""} · ${student?.section || ""}`.trim();
+  const logoCandidates = ["/jidanao-seal.png", "/school-logo.jpg"];
+  const title = `Report Card - ${learnerName}`;
 
-  const left = 50;
-  const right = 545;
-  const top = 660;
-  const rowHeight = 30;
-  const columns = [50, 250, 305, 360, 415, 470, 545];
-  commands.push("0.25 0.32 0.42 RG");
-  commands.push(pdfLine(left, top, right, top, 1));
-  commands.push(pdfLine(left, top - rowHeight, right, top - rowHeight, 1));
-  columns.forEach((x) => commands.push(pdfLine(x, top, x, top - rowHeight * (subjects.length + 2), 0.6)));
-  commands.push(pdfText("LEARNING AREA", 104, top - 19, 9, true));
-  commands.push(pdfText("1ST", 266, top - 19, 9, true));
-  commands.push(pdfText("2ND", 321, top - 19, 9, true));
-  commands.push(pdfText("3RD", 376, top - 19, 9, true));
-  commands.push(pdfText("4TH", 431, top - 19, 9, true));
-  commands.push(pdfText("FINAL", 488, top - 19, 9, true));
+  const rows = subjectRowsForHtml(subjects, scoreMap, rowAverages);
 
-  subjects.forEach((subject, index) => {
-    const yTop = top - rowHeight * (index + 1);
-    const yText = yTop - 19;
-    commands.push(pdfLine(left, yTop - rowHeight, right, yTop - rowHeight, 0.6));
-    commands.push(pdfText(subject.slice(0, 31), 58, yText, 9, false));
-    [1, 2, 3, 4].forEach((period, periodIndex) => {
-      const score = scoreMap[`${subject}|${period}`];
-      commands.push(pdfText(Number.isFinite(score) ? score : "-", 272 + periodIndex * 55, yText, 10, Number(score) >= 90));
-    });
-    commands.push(pdfText(rowAverages[subject] ?? "-", 494, yText, 10, true));
-  });
+  const html = `
+    <style>
+      @page { size: A4 portrait; margin: 0.55in; }
+      :root {
+        --blue-900: #0f2d5a;
+        --blue-700: #1e4d8f;
+        --blue-100: #eaf2ff;
+        --gold-500: #e9ba2b;
+        --ink: #1a2232;
+        --muted: #5b677a;
+        --line: #b8c6dd;
+        --line-strong: #7f94b8;
+        --surface: #ffffff;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #eef2f8; color: var(--ink); font-family: Arial, Helvetica, sans-serif; }
+      body { padding: 18px; }
+      .report-card {
+        width: 100%;
+        max-width: 8.27in;
+        min-height: 11.69in;
+        margin: 0 auto;
+        background: var(--surface);
+        box-shadow: 0 18px 48px rgba(15, 45, 90, 0.16);
+        border: 1px solid #dde5f2;
+      }
+      .report-shell { padding: 28px 34px 32px; }
+      .report-header {
+        display: grid;
+        grid-template-columns: 84px 1fr;
+        gap: 18px;
+        align-items: center;
+        padding-bottom: 18px;
+        border-bottom: 4px solid var(--blue-700);
+      }
+      .seal-wrap {
+        width: 78px;
+        height: 78px;
+        border-radius: 50%;
+        border: 3px solid var(--gold-500);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        background: #fff;
+      }
+      .seal-wrap img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .seal-fallback {
+        font-weight: 700;
+        color: var(--blue-700);
+        font-size: 17px;
+        letter-spacing: 1px;
+      }
+      .report-kicker {
+        margin: 0 0 6px;
+        color: var(--blue-700);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1.6px;
+        text-transform: uppercase;
+      }
+      .report-school {
+        margin: 0;
+        font-size: 26px;
+        line-height: 1.1;
+        color: #0d1f3a;
+        font-weight: 800;
+        text-transform: uppercase;
+      }
+      .report-title {
+        margin: 6px 0 2px;
+        font-size: 18px;
+        color: var(--blue-700);
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .report-subtitle {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .meta-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin: 18px 0 22px;
+      }
+      .meta-card {
+        border: 1px solid #d6e0ef;
+        border-radius: 12px;
+        padding: 12px 14px;
+        background: linear-gradient(180deg, #fafcff 0%, #f4f8ff 100%);
+      }
+      .meta-label {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 4px;
+      }
+      .meta-value {
+        display: block;
+        color: #122648;
+        font-size: 17px;
+        font-weight: 700;
+      }
+      .meta-subvalue {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .section-title {
+        margin: 8px 0 10px;
+        color: var(--blue-900);
+        font-size: 14px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .grades-table {
+        margin-top: 6px;
+        border: 1px solid var(--line-strong);
+      }
+      .grades-table th {
+        background: var(--blue-700);
+        color: #fff;
+        font-size: 12px;
+        padding: 11px 10px;
+        border: 1px solid var(--line-strong);
+        text-align: center;
+      }
+      .grades-table td {
+        border: 1px solid var(--line);
+        padding: 10px 10px;
+        font-size: 12px;
+        text-align: center;
+      }
+      .grades-table td.left { text-align: left; font-weight: 700; color: #20304c; }
+      .grades-table tbody tr:nth-child(even) td { background: #f8fbff; }
+      .grades-table .final-cell { font-weight: 800; color: var(--blue-900); }
+      .grades-table .average-row td {
+        background: #edf4ff;
+        font-weight: 800;
+      }
+      .remarks-box {
+        margin-top: 20px;
+        border: 1px solid #d6e0ef;
+        border-left: 5px solid var(--gold-500);
+        border-radius: 12px;
+        background: #fcfdff;
+        padding: 14px 16px;
+      }
+      .remarks-box p { margin: 0 0 7px; font-size: 13px; line-height: 1.55; }
+      .remarks-box p:last-child { margin-bottom: 0; }
+      .remarks-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 10px;
+      }
+      .signature-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 36px;
+        margin-top: 34px;
+      }
+      .signature-box {
+        padding-top: 28px;
+        border-top: 1px solid #5f708c;
+        text-align: center;
+        font-size: 12px;
+        color: #324155;
+      }
+      .signature-box strong { display: block; color: #152847; margin-bottom: 4px; }
+      .report-footer {
+        margin-top: 26px;
+        padding-top: 12px;
+        border-top: 1px solid #d7dfeb;
+        color: #6a7689;
+        font-size: 11px;
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      .print-tools {
+        max-width: 8.27in;
+        margin: 0 auto 12px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      .print-tools button {
+        border: 0;
+        background: var(--blue-700);
+        color: #fff;
+        font-weight: 700;
+        border-radius: 10px;
+        padding: 10px 16px;
+        cursor: pointer;
+      }
+      .print-tools button.secondary {
+        background: #e8eef8;
+        color: var(--blue-900);
+      }
+      @media print {
+        body { padding: 0; background: #fff; }
+        .print-tools { display: none !important; }
+        .report-card { box-shadow: none; border: 0; max-width: none; }
+      }
+    </style>
+    <body>
+      <div class="print-tools">
+        <button class="secondary" type="button" onclick="window.close()">Close</button>
+        <button type="button" onclick="window.print()">Print / Save as PDF</button>
+      </div>
+      <main class="report-card">
+        <div class="report-shell">
+          <header class="report-header">
+            <div class="seal-wrap">
+              <img src="${logoCandidates[0]}" alt="School logo" onerror="this.onerror=null;this.src='${logoCandidates[1]}';this.nextElementSibling.style.display='flex';" />
+              <div class="seal-fallback" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;">JES</div>
+            </div>
+            <div>
+              <p class="report-kicker">Republic of the Philippines</p>
+              <h1 class="report-school">${escapeHtml(schoolName)}</h1>
+              <h2 class="report-title">Learner Academic Report Card</h2>
+              <p class="report-subtitle">Official released academic results for school documentation, parent review, and learner monitoring.</p>
+            </div>
+          </header>
 
-  const averageTop = top - rowHeight * (subjects.length + 1);
-  commands.push(pdfLine(left, averageTop - rowHeight, right, averageTop - rowHeight, 1));
-  commands.push(pdfText("GENERAL AVERAGE", 58, averageTop - 19, 10, true));
-  commands.push(pdfText(generalAverage, 494, averageTop - 19, 11, true));
+          <section class="meta-grid">
+            <article class="meta-card">
+              <span class="meta-label">Learner</span>
+              <span class="meta-value">${escapeHtml(learnerName)}</span>
+              <span class="meta-subvalue">${escapeHtml(gradeSection)}</span>
+            </article>
+            <article class="meta-card">
+              <span class="meta-label">School Year</span>
+              <span class="meta-value">${escapeHtml(schoolYear || selected[0]?.schoolYear || "Current")}</span>
+              <span class="meta-subvalue">Generated ${escapeHtml(generatedAt)}</span>
+            </article>
+          </section>
 
-  const remarksY = averageTop - 70;
-  const finalRemark = generalAverage >= 90 ? "Outstanding" : generalAverage >= 85 ? "Very Satisfactory" : generalAverage >= 80 ? "Satisfactory" : generalAverage >= 75 ? "Fairly Satisfactory" : "Did Not Meet Expectations";
-  commands.push(pdfText("ACADEMIC REMARKS", 50, remarksY, 10, true));
-  commands.push(pdfLine(50, remarksY - 8, 545, remarksY - 8, 0.8));
-  commands.push(pdfText(`General performance: ${finalRemark}.`, 58, remarksY - 31, 10, false));
-  commands.push(pdfText("This report contains teacher-released records stored in the Jidanao Learning Management System.", 58, remarksY - 51, 8, false));
+          <section>
+            <h3 class="section-title">Academic Performance Summary</h3>
+            <table class="grades-table">
+              <thead>
+                <tr>
+                  <th style="width:42%">Learning Area</th>
+                  <th>1st</th>
+                  <th>2nd</th>
+                  <th>3rd</th>
+                  <th>4th</th>
+                  <th>Final</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows}
+                <tr class="average-row">
+                  <td class="left">GENERAL AVERAGE</td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <td class="final-cell">${escapeHtml(generalAverage)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
 
-  commands.push(pdfLine(65, 112, 235, 112, 0.8));
-  commands.push(pdfLine(360, 112, 530, 112, 0.8));
-  commands.push(pdfText("Class Adviser / Teacher", 100, 96, 9, true));
-  commands.push(pdfText("Parent / Guardian", 402, 96, 9, true));
-  commands.push(pdfText("Official electronic copy - verify against school records when required.", 145, 54, 8, false));
+          <section class="remarks-box">
+            <h3 class="section-title" style="margin-top:0">Academic Remarks</h3>
+            <div class="remarks-grid">
+              <div>
+                <p><strong>General Performance:</strong> ${escapeHtml(finalRemark)}</p>
+                <p><strong>Released Subjects:</strong> ${escapeHtml(subjects.join(", "))}</p>
+              </div>
+              <div>
+                <p><strong>School Use:</strong> This report reflects teacher-released grades currently stored in the Jidanao LearnSpace system.</p>
+                <p><strong>Confidentiality:</strong> Handle this learner record only for authorized school and parent purposes.</p>
+              </div>
+            </div>
+          </section>
 
-  const filename = `Jidanao-Report-Card-${String(student?.name || "Student").replace(/[^a-z0-9]+/gi, "-")}-${schoolYear || "Current"}.pdf`;
-  downloadPortraitPdf(commands.join("\n"), filename);
+          <section class="signature-grid">
+            <div class="signature-box">
+              <strong>Class Adviser / Teacher</strong>
+              Signature over printed name
+            </div>
+            <div class="signature-box">
+              <strong>Parent / Guardian</strong>
+              Signature over printed name
+            </div>
+          </section>
+
+          <footer class="report-footer">
+            <span>Official electronic school report card</span>
+            <span>${escapeHtml(schoolName)} · ${escapeHtml(schoolYear || selected[0]?.schoolYear || "Current")}</span>
+          </footer>
+        </div>
+      </main>
+      <script>
+        window.addEventListener('load', function () {
+          setTimeout(function () { window.print(); }, 350);
+        });
+      <\/script>
+    </body>
+  `;
+
+  openPrintWindow(title, html);
 }

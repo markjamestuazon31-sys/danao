@@ -26,7 +26,10 @@ export function recommendCatalog(catalog, progress, type, limit = 3) {
       const bFinished = b.percent >= 100 ? 1 : 0;
       if (aFinished !== bFinished) return aFinished - bFinished;
       if (a.percent !== b.percent) return b.percent - a.percent;
-      return b.updatedAt - a.updatedAt;
+      if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+      const systemDifference = Number(a.item.source === "system") - Number(b.item.source === "system");
+      if (systemDifference) return systemDifference;
+      return Number(b.item.updatedAt || b.item.createdAt || 0) - Number(a.item.updatedAt || a.item.createdAt || 0);
     })
     .slice(0, limit)
     .map(({ item }) => item);

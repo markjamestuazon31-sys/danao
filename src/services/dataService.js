@@ -9,7 +9,8 @@ import {
   set,
   update,
 } from "firebase/database";
-import { database } from "../firebase/firebaseConfig";
+import { auth, database } from "../firebase/firebaseConfig";
+import { isContentAvailable, normalizePublication } from "../utils/contentPublication";
 import {
   gradeToKey,
   levelFromXp,
@@ -54,6 +55,8 @@ const CATALOG_FIELDS = [
   "createdAt",
   "publishAt",
   "expiresAt",
+  "contentMode",
+  "materialName",
 ];
 
 function toRealtimeData(value) {
@@ -70,12 +73,7 @@ function normalizeSnapshot(snapshot, type) {
 }
 
 function isCatalogActive(item) {
-  const now = Date.now();
-  const publishAt = Number(item.publishAt || 0);
-  const expiresAt = Number(item.expiresAt || 0);
-  if (publishAt && now < publishAt) return false;
-  if (expiresAt && now > expiresAt) return false;
-  return true;
+  return isContentAvailable(item);
 }
 
 function flattenPublishedCatalog(value) {
@@ -105,7 +103,7 @@ function filterCatalogForSection(items, gradeLevel, sectionValue) {
   return items.filter((item) => item.source === "system" || contentMatchesStudentClass(item, {
     gradeLevel,
     section,
-  }) || normalizeSection(item.sectionKey) === section);
+  }));
 }
 
 function catalogMetadata(item, type) {
@@ -134,8 +132,9 @@ function catalogMetadata(item, type) {
     }
   });
 
-  result.grade = normalizeGradeLevel(result.grade || result.gradeLevel);
-  result.gradeLevel = result.grade;
+  // Canonical class fields must win over previously stored, possibly stale keys.
+  Object.assign(result, targetClass);
+  result.materialName = item.material?.name || item.materialName || null;
 
   return toRealtimeData(result);
 }
@@ -283,65 +282,97 @@ export async function getPublishedCatalogForGrade(gradeLevel, section = "") {
 
 export function subscribePublishedCatalogForGrade(gradeLevel, onData, onError, section = "") {
   const key = gradeToKey(gradeLevel);
-  return onValue(
-    ref(database, `publishedCatalog/${key}`),
-    (snapshot) => {
-      const items = snapshot.exists()
-        ? flattenPublishedCatalog({ [key]: snapshot.val() })
-        : [];
-      onData(filterCatalogForSection(mergeSystemCatalog(items, gradeLevel), gradeLevel, section));
-    },
-    (error) => {
-      onData(mergeSystemCatalog([], gradeLevel));
-      onError?.(error);
-    },
-  );
+  let raw = null;
+  let timer = null;
+  let stopped = false;
+  function emit() {
+    if (stopped) return;
+    clearTimeout(timer);
+    const items = raw ? flattenPublishedCatalog({ [key]: raw }) : [];
+    onData(filterCatalogForSection(mergeSystemCatalog(items, gradeLevel), gradeLevel, section));
+    const now = Date.now();
+    const boundaries = [...Object.values(raw?.lessons || {}), ...Object.values(raw?.games || {})]
+      .flatMap((item) => [Number(item.publishAt || 0), Number(item.expiresAt || 0)])
+      .filter((time) => Number.isFinite(time) && time > now);
+    if (boundaries.length) timer = setTimeout(emit, Math.min(2147483647, Math.max(20, Math.min(...boundaries) - now + 20)));
+  }
+  const unsubscribe = onValue(ref(database, `publishedCatalog/${key}`), (snapshot) => {
+    raw = snapshot.exists() ? snapshot.val() : null;
+    emit();
+  }, (error) => { raw = null; emit(); onError?.(error); });
+  const handleVisibility = () => { if (typeof document === "undefined" || !document.hidden) emit(); };
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", handleVisibility);
+  return () => { stopped = true; clearTimeout(timer); unsubscribe();
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", handleVisibility);
+  };
+}
+
+/** Save a single record, or a linked lesson/game pair, in ONE root update. */
+export async function saveTeacherContentBatch(teacherId, entries) {
+  if (!teacherId || auth.currentUser?.uid !== teacherId) throw new Error("Sign in with your teacher account before saving.");
+  if (!Array.isArray(entries) || !entries.length || entries.length > 2) throw new Error("Choose a lesson, a game, or one lesson/game pair.");
+  if (new Set(entries.map((entry) => entry.type)).size !== entries.length) throw new Error("Only one item of each type can be saved together.");
+  const actorSnapshot = await get(ref(database, `users/${teacherId}`));
+  const actor = actorSnapshot.exists() ? actorSnapshot.val() : null;
+  if (!["teacher", "admin"].includes(actor?.role) || actor.status !== "active") throw new Error("An active teacher account is required.");
+  const now = Date.now();
+  const prepared = await Promise.all(entries.map(async ({ type, id, content }) => {
+    if (!["lesson", "game"].includes(type)) throw new Error("Invalid learning content type.");
+    if (id && /[.#$\[\]\/]/.test(id)) throw new Error("Invalid learning content ID.");
+    const node = type === "game" ? "games" : "lessons";
+    let current = null;
+    if (id) {
+      const snapshot = await get(ref(database, `${node}/${id}`));
+      if (!snapshot.exists()) throw new Error("This content no longer exists. Refresh your library.");
+      current = snapshot.val();
+      if (current.teacherId !== teacherId && actor.role !== "admin") throw new Error("Only the creating teacher can change this content.");
+    }
+    const merged = { ...(current || {}), ...(content || {}) };
+    const target = classFields(merged.grade || merged.gradeLevel, normalizeSection(merged.section, ALL_SECTIONS));
+    if (!teacherCanAccessClass(actor, target.grade, target.section)) throw new Error("This grade and section is outside your administrator-assigned teaching scope.");
+    if (!String(merged.title || "").trim()) throw new Error("Enter a title for this learning activity.");
+    if (type === "lesson" && merged.contentMode === "document" && !merged.material?.url) throw new Error("Upload the original lesson file before saving. An extracted-text copy is not an original document.");
+    const publicationInput = { ...merged };
+    // Metadata-only edits must not accidentally publish a scheduled lesson early.
+    if (content?.status === undefined && merged.status === "published" && Number(merged.publishAt) > now) publicationInput.status = "scheduled";
+    const record = toRealtimeData({ ...merged, ...target, ...normalizePublication(publicationInput, now),
+      subject: ensureSubjectForGrade(target.grade, merged.subject),
+      teacherId: current?.teacherId || teacherId, createdAt: current?.createdAt || now, updatedAt: now });
+    delete record.id; delete record.type;
+    return { id: id || push(ref(database, node)).key, type, node, current, record };
+  }));
+  const lesson = prepared.find((entry) => entry.type === "lesson");
+  const game = prepared.find((entry) => entry.type === "game");
+  if (lesson && game) {
+    if (lesson.record.classKey !== game.record.classKey) throw new Error("A connected lesson and game must belong to the same class.");
+    if (lesson.record.status !== game.record.status || lesson.record.publishAt !== game.record.publishAt || lesson.record.expiresAt !== game.record.expiresAt) throw new Error("Use the same publication schedule for a lesson/game pair.");
+    lesson.record.gameId = game.id; lesson.record.connectedGameId = game.id;
+    lesson.record.quiz = game.record.questions || null;
+    game.record.lessonId = lesson.id;
+  }
+  const updates = {};
+  prepared.forEach(({ id, type, node, current, record }) => {
+    updates[`${node}/${id}`] = record;
+    if (current) {
+      const oldKeys = new Set([current.gradeKey, gradeToKey(current.grade || current.gradeLevel)]);
+      oldKeys.forEach((key) => { if (key) updates[`publishedCatalog/${key}/${node}/${id}`] = null; });
+    }
+    updates[`publishedCatalog/${record.gradeKey}/${node}/${id}`] = record.status === "published"
+      ? catalogMetadata({ ...record, id }, type) : null;
+  });
+  await update(ref(database), updates);
+  return prepared.map(({ id, type, record }) => ({ ...record, id, type }));
 }
 
 async function saveTeacherContent(type, teacherId, content) {
-  if (!teacherId) throw new Error("A signed-in teacher is required.");
-  const profileSnapshot = await get(ref(database, `users/${teacherId}`));
-  const teacherProfile = profileSnapshot.exists() ? profileSnapshot.val() : null;
-  if (!teacherProfile || !teacherCanAccessClass(teacherProfile, content.grade, content.section)) {
-    throw new Error("This grade and section is outside your administrator-assigned teaching scope.");
-  }
-  const node = type === "game" ? "games" : "lessons";
-  const contentRef = push(ref(database, node));
-  const now = Date.now();
-  const targetClass = classFields(content.grade || content.gradeLevel, content.section);
-  const subject = ensureSubjectForGrade(targetClass.grade, content.subject);
-  const requestedStatus =
-    content.status === "published" || content.status === "scheduled"
-      ? "published"
-      : "draft";
-  const record = toRealtimeData({
-    ...content,
-    ...targetClass,
-    subject,
-    teacherId,
-    status: requestedStatus,
-    createdAt: now,
-    updatedAt: now,
-  });
-  const changes = { [`${node}/${contentRef.key}`]: record };
-  if (requestedStatus === "published") {
-    const plural = type === "game" ? "games" : "lessons";
-    changes[`publishedCatalog/${gradeToKey(record.grade)}/${plural}/${contentRef.key}`] = catalogMetadata(record, type);
-  }
-  await update(ref(database), changes);
-  return { id: contentRef.key, type, ...record };
+  const [saved] = await saveTeacherContentBatch(teacherId, [{ type, content }]);
+  return saved;
 }
-
-export async function saveLesson(teacherId, lesson) {
-  return saveTeacherContent("lesson", teacherId, lesson);
-}
-
-export async function saveGame(teacherId, game) {
-  return saveTeacherContent("game", teacherId, game);
-}
+export async function saveLesson(teacherId, lesson) { return saveTeacherContent("lesson", teacherId, lesson); }
+export async function saveGame(teacherId, game) { return saveTeacherContent("game", teacherId, game); }
 
 export async function deleteTeacherContent(teacherId, type, contentId) {
-  if (!teacherId) throw new Error("A signed-in teacher is required.");
+  if (!teacherId || auth.currentUser?.uid !== teacherId) throw new Error("A signed-in teacher is required.");
   if (!contentId) throw new Error("Learning content ID is required.");
   if (!["lesson", "game"].includes(type)) throw new Error("Invalid learning content type.");
 
@@ -357,7 +388,9 @@ export async function deleteTeacherContent(teacherId, type, contentId) {
 
   const gradeKey = record.gradeKey || gradeToKey(record.grade || record.gradeLevel);
   const changes = { [`${node}/${contentId}`]: null };
-  if (gradeKey) changes[`publishedCatalog/${gradeKey}/${plural}/${contentId}`] = null;
+  for (const key of new Set([gradeKey, gradeToKey(record.grade || record.gradeLevel)])) {
+    if (key) changes[`publishedCatalog/${key}/${plural}/${contentId}`] = null;
+  }
   await update(ref(database), changes);
   return { id: contentId, type, title: record.title || "Untitled content" };
 }
@@ -372,26 +405,8 @@ export async function updateGame(gameId, changes) {
 
 export async function updateTeacherContent(type, contentId, changes) {
   if (!contentId) throw new Error("Learning content ID is required.");
-  if (!["lesson", "game"].includes(type)) throw new Error("Invalid learning content type.");
-
-  const node = type === "game" ? "games" : "lessons";
-  const snapshot = await get(ref(database, `${node}/${contentId}`));
-  if (!snapshot.exists()) throw new Error("Learning content was not found.");
-
-  const current = snapshot.val();
-  const next = toRealtimeData({ ...current, ...changes, updatedAt: Date.now() });
-  const updates = { [`${node}/${contentId}`]: next };
-
-  const gradeKey = next.gradeKey || gradeToKey(next.grade || next.gradeLevel);
-  const plural = type === "game" ? "games" : "lessons";
-  if (next.status === "published") {
-    updates[`publishedCatalog/${gradeKey}/${plural}/${contentId}`] = catalogMetadata(next, type);
-  } else {
-    updates[`publishedCatalog/${gradeKey}/${plural}/${contentId}`] = null;
-  }
-
-  await update(ref(database), updates);
-  return { id: contentId, type, ...next };
+  const [saved] = await saveTeacherContentBatch(auth.currentUser?.uid, [{ type, id: contentId, content: changes }]);
+  return saved;
 }
 
 export async function saveQuiz(teacherId, quiz) {
@@ -622,7 +637,7 @@ export async function syncPublishedCatalog() {
   let skippedCount = 0;
 
   content.forEach((item) => {
-    if (item.status !== "published") return;
+    if (!["published", "scheduled"].includes(item.status)) return;
     const grade = normalizeGradeLevel(item.grade || item.gradeLevel);
     if (!grade) {
       skippedCount += 1;
