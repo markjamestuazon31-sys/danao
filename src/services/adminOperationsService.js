@@ -1,4 +1,4 @@
-import { get, push, ref, remove, set } from "firebase/database";
+import { get, onValue, push, ref, remove, set } from "firebase/database";
 import { database } from "../firebase/firebaseConfig";
 import { normalizeAssignedClasses } from "../data/schoolClasses";
 
@@ -118,6 +118,82 @@ export async function deleteAnnouncement(admin, announcement) {
     set(auditRef, { id: auditRef.key, action: "announcement.deleted", targetId: announcement.id, summary: `Deleted announcement: ${announcement.title || "Untitled"}`, administratorUid: admin.uid, administratorName: admin.name || admin.email || "Administrator", createdAt: now }),
   ]);
 }
+
+function normalizeGradeLabel(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function announcementIsActive(item, now = Date.now()) {
+  if (!item || item.status === "deleted") return false;
+  const expiresAt = Number(item.expiresAt || 0);
+  if (expiresAt > 0 && expiresAt <= now) return false;
+  return true;
+}
+
+/** Whether this announcement should be shown to the given user profile/role. */
+export function announcementVisibleToUser(item, { role, profile } = {}) {
+  if (!announcementIsActive(item)) return false;
+  const audience = String(item.audience || "all").toLowerCase();
+  const userRole = String(role || profile?.role || "").toLowerCase();
+
+  if (audience === "all") return true;
+  if (audience === "teachers") return userRole === "teacher" || userRole === "admin";
+  if (audience === "students") return userRole === "student";
+  if (audience === "class") {
+    if (userRole !== "student") return false;
+    const grade = normalizeGradeLabel(profile?.gradeLevel || profile?.grade || "");
+    const section = normalizeGradeLabel(profile?.section || "");
+    const targetGrade = normalizeGradeLabel(item.grade);
+    const targetSection = normalizeGradeLabel(item.section);
+    if (!targetGrade) return false;
+    const gradeMatch = grade.includes(targetGrade.replace(/^grade\s*/, "")) || targetGrade.includes(grade.replace(/^grade\s*/, "")) || grade === targetGrade;
+    if (!gradeMatch) return false;
+    if (!targetSection) return true;
+    return section.includes(targetSection.replace(/^section\s*/, "")) || targetSection.includes(section.replace(/^section\s*/, "")) || section === targetSection;
+  }
+  return true;
+}
+
+/**
+ * Live subscription to announcements visible to the current user.
+ * Returns an unsubscribe function.
+ */
+export function subscribeVisibleAnnouncements({ role, profile }, onData, onError) {
+  const announcementsRef = ref(database, "announcements");
+  return onValue(
+    announcementsRef,
+    (snapshot) => {
+      const now = Date.now();
+      const list = [];
+      if (snapshot.exists()) {
+        snapshot.forEach((child) => {
+          const item = { id: child.key, ...child.val() };
+          if (announcementVisibleToUser(item, { role, profile })) {
+            list.push(item);
+          }
+        });
+      }
+      list.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+      onData(list);
+    },
+    (error) => {
+      if (typeof onError === "function") onError(error);
+    },
+  );
+}
+
+/** One-shot fetch of announcements visible to the current user. */
+export async function getVisibleAnnouncements({ role, profile } = {}) {
+  const snapshot = await get(ref(database, "announcements"));
+  if (!snapshot.exists()) return [];
+  const list = [];
+  snapshot.forEach((child) => {
+    const item = { id: child.key, ...child.val() };
+    if (announcementVisibleToUser(item, { role, profile })) list.push(item);
+  });
+  return list.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+}
+
 
 export function exportAdminWordReport(data) {
   if (!data) return;

@@ -8,14 +8,17 @@ import {
   Gamepad2,
   GraduationCap,
   Hand,
+  Layers,
   LoaderCircle,
   Lock,
   Mic,
   Music2,
   RotateCcw,
   ShieldCheck,
+  Shuffle,
   Sparkles,
   Star,
+  ToggleLeft,
   Trophy,
   Volume2,
   XCircle,
@@ -25,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import CameraMathStage from "../components/student/CameraMathStage";
 import CameraReadingStage from "../components/student/CameraReadingStage";
+import CameraSequenceStage from "../components/student/CameraSequenceStage";
 import VoiceSettings from "../components/student/VoiceSettings";
 import { useAuth } from "../context/AuthContext";
 import { useLearningPreferences } from "../context/LearningPreferencesContext";
@@ -32,6 +36,7 @@ import { getGradeExperience, normalizeGradeLevel, systemCatalogForGrade } from "
 import { normalizeProgress, subscribeUserProgress } from "../services/dataService";
 import { recordSystemGameResult } from "../services/realtimeProgressService";
 import {
+  CAMERA_TRACKS,
   cameraProgramQuestions,
   getPublishedCameraProgramsForStudent,
 } from "../services/cameraContentService";
@@ -41,8 +46,20 @@ const ITEMS_PER_LEVEL = 10;
 const TOTAL_LEVELS = 10;
 const PASS_COUNT = 7;
 
+const TRACK_ICONS = {
+  math: Calculator,
+  english: BookOpenCheck,
+  sort: Shuffle,
+  sentence: Layers,
+  spelling: Layers,
+  picture: Camera,
+  truefalse: ToggleLeft,
+};
+
 function normalizeActivity(value) {
-  if (value === "english") return value;
+  const key = String(value || "").toLowerCase().trim();
+  if (CAMERA_TRACKS[key]) return key;
+  if (key === "reading" || key === "camera-reading") return "english";
   return "math";
 }
 
@@ -51,30 +68,28 @@ function shuffleQuestions(items) {
 }
 
 function activityDetails(activity) {
-  if (activity === "english") {
-    return {
-      title: "English Camera Reading",
-      shortTitle: "English Reading",
-      subject: "English",
-      reading: true,
-      language: "english",
-      route: "english",
-      description: "Read grade-level English passages aloud and build pronunciation, fluency, confidence, vocabulary, and expression.",
-    };
-  }
+  const track = CAMERA_TRACKS[normalizeActivity(activity)] || CAMERA_TRACKS.math;
   return {
-    title: "Weekly Camera Math Mission",
-    shortTitle: "Camera Math",
-    subject: "Mathematics",
-    reading: false,
+    title: track.label,
+    shortTitle: track.label.replace(/^Camera\s+/i, ""),
+    subject: track.subject,
+    reading: track.kind === "reading",
+    sequence: track.kind === "sequence",
+    choice: track.kind === "choice" || track.kind === "boolean",
     language: "english",
-    route: "math",
-    description: "Grab a floating number with a simple pinch, move it into the answer box, and open your hand to drop it. Every week brings a new 10-item mission.",
+    route: track.id,
+    description: track.shortDescription || track.label,
+    playInstruction: track.playInstruction || "",
+    musicTheme: track.musicTheme || "arcade",
+    sequenceSeparator: track.sequenceSeparator ?? " ",
+    itemNoun: track.itemNoun || "item",
+    kind: track.kind,
   };
 }
 
 function gradeScope(grade, activity) {
-  if (activity === "english") {
+  const track = normalizeActivity(activity);
+  if (track === "english") {
     const scopes = {
       "Grade 3": "short sentences, familiar words, phrasing, and expression",
       "Grade 4": "longer sentences, punctuation, vocabulary, and smooth reading",
@@ -83,13 +98,16 @@ function gradeScope(grade, activity) {
     };
     return scopes[grade] || scopes["Grade 3"];
   }
-  const scopes = {
-    "Grade 3": "addition, subtraction, multiplication, and guided word problems",
-    "Grade 4": "multi-digit operations, multiplication, division, and multi-step problems",
-    "Grade 5": "decimals, fractions, computation, money, and problem solving",
-    "Grade 6": "decimals, percent, ratios, money, and multi-step reasoning",
-  };
-  return scopes[grade] || scopes["Grade 3"];
+  if (track === "math") {
+    const scopes = {
+      "Grade 3": "addition, subtraction, multiplication, and guided word problems",
+      "Grade 4": "multi-digit operations, multiplication, division, and multi-step problems",
+      "Grade 5": "decimals, fractions, computation, money, and problem solving",
+      "Grade 6": "decimals, percent, ratios, money, and multi-step reasoning",
+    };
+    return scopes[grade] || scopes["Grade 3"];
+  }
+  return CAMERA_TRACKS[track]?.shortDescription || "grade-level camera practice";
 }
 
 function ScoreStars({ count }) {
@@ -106,9 +124,16 @@ export default function CameraMathGame({ initialActivity = "math" }) {
   const grade = normalizeGradeLevel(profile?.gradeLevel) || "Grade 3";
   const experience = getGradeExperience(grade);
   const normalizedInitialActivity = normalizeActivity(initialActivity);
+  // Dedicated routes (/student/camera-truefalse etc.) open that game only — no multi-game chooser
+  const focusedMode = Boolean(initialActivity && initialActivity !== "all");
   const [activity, setActivity] = useState(normalizedInitialActivity);
   const [phase, setPhase] = useState("intro");
-  const [mode, setMode] = useState(normalizedInitialActivity === "math" ? "camera-drag" : "camera-reading");
+  const [mode, setMode] = useState(() => {
+    const d = activityDetails(normalizedInitialActivity);
+    if (d.reading) return "camera-reading";
+    if (d.sequence) return "camera-sequence";
+    return "camera-drag";
+  });
   const [level, setLevel] = useState(1);
   const [progress, setProgress] = useState(() => normalizeProgress({}));
   const [teacherPrograms, setTeacherPrograms] = useState([]);
@@ -132,8 +157,9 @@ export default function CameraMathGame({ initialActivity = "math" }) {
   const details = activityDetails(activity);
   const game = useMemo(() => {
     const catalog = systemCatalogForGrade(grade);
-    if (activity === "english") return catalog.find((item) => item.id.startsWith("camera-reading-english-"));
-    return catalog.find((item) => item.id.startsWith("camera-math-"));
+    return catalog.find((item) => item.certificateTrack === activity)
+      || catalog.find((item) => item.id.startsWith(`camera-${activity}-`))
+      || catalog.find((item) => item.id.startsWith("camera-math-"));
   }, [activity, grade]);
   const gameProgress = progress.game?.[game?.id] || {};
   const weeklyMission = gameProgress.weeklyMissions?.[learningWeek.key] || null;
@@ -143,7 +169,7 @@ export default function CameraMathGame({ initialActivity = "math" }) {
     program.track === activity && Number(program.level) === Number(level),
   ) || null, [activity, level, teacherPrograms]);
   const currentProgramAvailable = Boolean(currentProgram
-    && (activity !== "math" || currentProgram.weekKey === learningWeek.key));
+    && (activity !== "math" || !currentProgram.weekKey || currentProgram.weekKey === learningWeek.key));
   const questions = useMemo(
     () => currentProgramAvailable
       ? shuffleQuestions(cameraProgramQuestions(currentProgram)).slice(0, ITEMS_PER_LEVEL)
@@ -151,6 +177,21 @@ export default function CameraMathGame({ initialActivity = "math" }) {
     [currentProgram, currentProgramAvailable, level, activity],
   );
   const question = questions[questionIndex];
+
+  // Only show tracks the teacher has actually published for this student/class
+  const availableTracks = useMemo(() => {
+    const trackIds = new Set(
+      teacherPrograms
+        .filter((program) => {
+          if (!program?.track || !CAMERA_TRACKS[program.track]) return false;
+          // Math can be week-scoped; other tracks always count
+          if (program.track === "math" && program.weekKey && program.weekKey !== learningWeek.key) return false;
+          return true;
+        })
+        .map((program) => program.track)
+    );
+    return Object.values(CAMERA_TRACKS).filter((track) => trackIds.has(track.id));
+  }, [teacherPrograms, learningWeek.key]);
 
   useEffect(() => {
     if (!user?.uid) return undefined;
@@ -180,11 +221,25 @@ export default function CameraMathGame({ initialActivity = "math" }) {
   }, [profile, user?.uid]);
 
   useEffect(() => {
+    const d = activityDetails(normalizedInitialActivity);
     setActivity(normalizedInitialActivity);
-    setMode(normalizedInitialActivity === "math" ? "camera-drag" : "camera-reading");
+    setMode(d.reading ? "camera-reading" : d.sequence ? "camera-sequence" : "camera-drag");
     setLevel(1);
     setPhase("intro");
   }, [normalizedInitialActivity]);
+  // Auto-select only when NOT in focused mode (hub view). Focused routes stay on their track.
+  useEffect(() => {
+    if (focusedMode || programsLoading || !availableTracks.length) return;
+    const currentStillValid = availableTracks.some((t) => t.id === activity);
+    if (currentStillValid) return;
+    const next = availableTracks[0];
+    const d = activityDetails(next.id);
+    setActivity(next.id);
+    setMode(d.reading ? "camera-reading" : d.sequence ? "camera-sequence" : "camera-drag");
+    setLevel(1);
+    setFeedback(null);
+  }, [focusedMode, programsLoading, availableTracks, activity]);
+
 
   const finishGame = useCallback(async (finalScore, finalCorrect) => {
     if (finishedRef.current) return;
@@ -322,12 +377,13 @@ export default function CameraMathGame({ initialActivity = "math" }) {
 
   function chooseActivity(nextActivity) {
     const normalized = normalizeActivity(nextActivity);
+    const d = activityDetails(normalized);
     const nextGame = systemCatalogForGrade(grade).find((item) => item.certificateTrack === normalized);
     const unlocked = Math.max(1, Math.min(TOTAL_LEVELS, Number(progress.game?.[nextGame?.id]?.maxUnlockedLevel || 1)));
     setActivity(normalized);
-    setMode(normalized === "math" ? "camera-drag" : "camera-reading");
+    setMode(d.reading ? "camera-reading" : d.sequence ? "camera-sequence" : "camera-drag");
     const availableLevels = teacherPrograms
-      .filter((program) => program.track === normalized && (normalized !== "math" || program.weekKey === learningWeek.key))
+      .filter((program) => program.track === normalized && (normalized !== "math" || !program.weekKey || program.weekKey === learningWeek.key))
       .map((program) => Number(program.level))
       .filter((programLevel) => programLevel <= unlocked)
       .sort((left, right) => right - left);
@@ -340,12 +396,11 @@ export default function CameraMathGame({ initialActivity = "math" }) {
     const availableLevel = Math.max(maxUnlockedLevel, Number(result?.maxUnlockedLevel || 1));
     const targetLevel = Math.max(1, Math.min(availableLevel, Number(requestedLevel) || 1));
     const targetProgram = teacherPrograms.find((program) => program.track === activity && Number(program.level) === targetLevel);
-    const programIsAvailable = Boolean(targetProgram && (activity !== "math" || targetProgram.weekKey === learningWeek.key));
+    const programIsAvailable = Boolean(targetProgram && (activity !== "math" || !targetProgram.weekKey || targetProgram.weekKey === learningWeek.key));
     const targetQuestions = programIsAvailable ? cameraProgramQuestions(targetProgram) : [];
     if (targetQuestions.length !== ITEMS_PER_LEVEL) {
-      setProgramsError(activity === "math"
-        ? `Your teacher has not published this week’s 10-item Math Level ${targetLevel} mission for ${grade} · ${profile?.section || "your section"}.`
-        : `Your teacher has not published the 10-item English Reading Level ${targetLevel} for ${grade} · ${profile?.section || "your section"}.`);
+      const label = activityDetails(activity).title;
+      setProgramsError(`Your teacher has not published the 10-item ${label} Level ${targetLevel} for ${grade} · ${profile?.section || "your section"}.`);
       setPhase("intro");
       return;
     }
@@ -364,7 +419,7 @@ export default function CameraMathGame({ initialActivity = "math" }) {
     setPhase("playing");
     playSound("start");
     stopMusicRef.current?.();
-    stopMusicRef.current = beginMusic(activity === "english" ? "reading" : "math");
+    stopMusicRef.current = beginMusic(details.musicTheme || (activity === "english" ? "reading" : "math"));
     const first = targetQuestions[0];
     window.setTimeout(() => speak(details.reading
       ? `${details.shortTitle}, level ${targetLevel}, item one. ${first.explanation}`
@@ -420,18 +475,56 @@ export default function CameraMathGame({ initialActivity = "math" }) {
           </div>
 
           <div className="camera-math-intro__setup">
-            <div>
-              <span className="camera-learning-section-label">CHOOSE A CAMERA GAME</span>
-              <h2>Two grade-specific learning paths</h2>
-            </div>
-            <div className="camera-learning-activity-grid">
-              <button type="button" className={activity === "math" ? "is-selected" : ""} onClick={() => chooseActivity("math")}>
-                <Calculator size={24} /><span><strong>Camera Math</strong><small>10 items per level.</small></span>{activity === "math" && <CheckCircle2 size={18} />}
-              </button>
-              <button type="button" className={activity === "english" ? "is-selected" : ""} onClick={() => chooseActivity("english")}>
-                <BookOpenCheck size={24} /><span><strong>English Reading</strong><small>Read aloud in English.</small></span>{activity === "english" && <CheckCircle2 size={18} />}
-              </button>
-            </div>
+            {!focusedMode && (
+              <>
+                <div>
+                  <span className="camera-learning-section-label">CAMERA GAMES FROM YOUR TEACHER</span>
+                  <h2>
+                    {programsLoading
+                      ? "Loading your teacher’s activities…"
+                      : availableTracks.length === 0
+                        ? "No camera activities published yet"
+                        : availableTracks.length === 1
+                          ? "Your assigned camera activity"
+                          : `${availableTracks.length} activities ready for you`}
+                  </h2>
+                </div>
+                {programsLoading ? (
+                  <div className="camera-learning-activity-grid" style={{ opacity: 0.7 }}>
+                    <div style={{ padding: "1.25rem", gridColumn: "1 / -1", textAlign: "center" }}>
+                      <LoaderCircle className="spin" size={28} /> Checking published content…
+                    </div>
+                  </div>
+                ) : availableTracks.length === 0 ? (
+                  <div className="camera-learning-activity-grid">
+                    <div style={{ padding: "1.25rem", gridColumn: "1 / -1", border: "1px dashed #cbd5e1", borderRadius: "12px", textAlign: "center" }}>
+                      <BookOpenCheck size={28} style={{ marginBottom: 8 }} />
+                      <strong style={{ display: "block" }}>Waiting for your teacher</strong>
+                      <small>Only games your teacher creates and publishes for {grade} · {profile?.section || "your section"} will appear here.</small>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="camera-learning-activity-grid">
+                    {availableTracks.map((track) => {
+                      const Icon = TRACK_ICONS[track.id] || Camera;
+                      const selected = activity === track.id;
+                      return (
+                        <button type="button" key={track.id} className={selected ? "is-selected" : ""} onClick={() => chooseActivity(track.id)}>
+                          <Icon size={24} /><span><strong>{track.label}</strong><small>{track.shortDescription}</small></span>{selected && <CheckCircle2 size={18} />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+            {focusedMode && (
+              <div style={{ marginBottom: "0.75rem" }}>
+                <span className="camera-learning-section-label">YOUR ACTIVITY</span>
+                <h2 style={{ margin: "0.25rem 0 0" }}>{details.title}</h2>
+                <p style={{ margin: "0.35rem 0 0", opacity: 0.8, fontSize: "0.95rem" }}>{details.description}</p>
+              </div>
+            )}
 
             <div className="camera-level-selector">
               <div><span className="camera-learning-section-label">SELECT LEVEL</span><strong>{certificateEligible ? "Certificate earned" : `Level ${maxUnlockedLevel} of ${TOTAL_LEVELS} unlocked`}</strong></div>
@@ -439,7 +532,7 @@ export default function CameraMathGame({ initialActivity = "math" }) {
                 {Array.from({ length: TOTAL_LEVELS }, (_, index) => index + 1).map((itemLevel) => {
                   const unlocked = itemLevel <= maxUnlockedLevel;
                   const assignedProgram = teacherPrograms.find((program) => program.track === activity && Number(program.level) === itemLevel);
-                  const assigned = Boolean(assignedProgram && (activity !== "math" || assignedProgram.weekKey === learningWeek.key));
+                  const assigned = Boolean(assignedProgram && (activity !== "math" || !assignedProgram.weekKey || assignedProgram.weekKey === learningWeek.key));
                   const completed = Boolean(gameProgress.levels?.[`level-${itemLevel}`]?.passed);
                   return (
                     <button type="button" key={itemLevel} disabled={!unlocked || !assigned} className={`${level === itemLevel ? "is-selected" : ""} ${completed ? "is-completed" : ""} ${assigned ? "has-teacher-content" : "is-awaiting-content"}`} onClick={() => setLevel(itemLevel)} title={!assigned ? "Waiting for teacher-published content" : `Open Level ${itemLevel}`}>
@@ -451,18 +544,20 @@ export default function CameraMathGame({ initialActivity = "math" }) {
               <p>Pass at least {PASS_COUNT} of {ITEMS_PER_LEVEL} teacher-approved activities to unlock the next level. A locked level may also be waiting for your teacher to publish it.</p>
             </div>
 
-            {activity === "math" ? (
+            {details.reading ? (
+              <div className="camera-reading-mode-note"><Camera size={20} /><div><strong>Camera + voice practice</strong><p>The camera starts automatically. The microphone starts only when the student presses the reading button.</p></div></div>
+            ) : details.sequence ? (
+              <div className="camera-reading-mode-note"><Camera size={20} /><div><strong>Camera sequence practice</strong><p>{details.playInstruction || "Pinch each block and place them in the correct order."}</p></div></div>
+            ) : (
               <fieldset className="camera-learning-control-modes">
                 <legend>How to answer</legend>
                 <button type="button" className={mode === "camera-drag" ? "is-selected" : ""} onClick={() => setMode("camera-drag")}><Camera size={20} /><span><strong>Hand Drag</strong><small>Camera starts automatically. Pinch, drag, and release.</small></span></button>
                 <button type="button" className={mode === "classic" ? "is-selected" : ""} onClick={() => setMode("classic")}><Gamepad2 size={20} /><span><strong>Tap Mode</strong><small>No camera. Tap or use the keyboard.</small></span></button>
               </fieldset>
-            ) : (
-              <div className="camera-reading-mode-note"><Camera size={20} /><div><strong>Camera + voice practice</strong><p>The camera starts automatically. The microphone starts only when the student presses the reading button.</p></div></div>
             )}
 
             {certificateEligible && <Link className="camera-certificate-ready" to={`/student/camera-certificate/${details.route}`}><GraduationCap size={21} /><span><strong>Your Level 10 certificate is ready</strong><small>Open, print, or save it as PDF.</small></span></Link>}
-            <div className="student-game-audio-ready is-camera-audio"><Music2 size={21} /><div><strong>{details.reading ? "Reading soundtrack" : "Math mission soundtrack"} ready</strong><span>{musicEnabled ? "Music on" : "Music muted"} · {soundEnabled ? "Game effects on" : "Game effects muted"}. Audio begins after Start Level.</span></div></div>
+            <div className="student-game-audio-ready is-camera-audio"><Music2 size={21} /><div><strong>{details.reading ? "Reading soundtrack" : `${details.shortTitle} soundtrack`} ready</strong><span>{musicEnabled ? "Music on" : "Music muted"} · {soundEnabled ? "Game effects on" : "Game effects muted"}. Audio begins after Start Level.</span></div></div>
             <button type="button" className="camera-math-start" onClick={() => startGame(level)} disabled={!currentProgramAvailable || programsLoading}><Zap size={19} /> {programsLoading ? "Loading teacher content…" : currentProgramAvailable ? `Start Level ${level} · ${ITEMS_PER_LEVEL} items` : "Waiting for teacher to publish this level"}</button>
             <p className="camera-math-requirement">Camera mode works best in a well-lit area using Chrome or Edge over HTTPS or localhost. Required browser permission may appear on the first play.</p>
           </div>
@@ -518,7 +613,7 @@ export default function CameraMathGame({ initialActivity = "math" }) {
       </header>
 
       <section className="camera-math-question-card">
-        <div className="camera-math-question-card__meta"><span>{question?.skill}</span><b>{grade} · {profile?.section}</b><em>{activity === "math" ? "TEACHER WEEKLY MISSION" : `TEACHER LEVEL ${level}`}</em></div>
+        <div className="camera-math-question-card__meta"><span>{question?.skill}</span><b>{grade} · {profile?.section}</b><em>{activity === "math" ? "TEACHER WEEKLY MISSION" : `TEACHER LEVEL ${level} · ${details.shortTitle.toUpperCase()}`}</em></div>
         <div className="camera-math-question-card__main">
           <button type="button" onClick={() => speak(details.reading ? question?.readingText : `${question?.prompt}. Choose from ${question?.choices.join(", ")}.`)} aria-label="Read question aloud"><Volume2 size={20} /></button>
           <div><small>{details.reading ? "READ CLEARLY" : "SOLVE THE CHALLENGE"}</small><h1>{details.reading ? details.shortTitle : question?.prompt}</h1></div>
@@ -545,6 +640,16 @@ export default function CameraMathGame({ initialActivity = "math" }) {
           onModel={() => speak(question?.readingText)}
           beforeListen={stopSpeaking}
           language={details.language}
+          disabled={Boolean(feedback)}
+          autoStart
+        />
+      ) : details.sequence || mode === "camera-sequence" ? (
+        <CameraSequenceStage
+          choices={question?.choices || []}
+          questionKey={`${question?.id}-${stageKey}`}
+          separator={details.sequenceSeparator}
+          itemNoun={details.itemNoun}
+          onComplete={(answer, metadata) => submitAnswer(answer, metadata)}
           disabled={Boolean(feedback)}
           autoStart
         />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bell,
   ChevronDown,
@@ -11,12 +11,25 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import ProfileAvatar from "./ProfileAvatar";
 import { useAuth } from "../context/AuthContext";
 import { logout } from "../services/authService";
+import { subscribeVisibleAnnouncements } from "../services/adminOperationsService";
 
 const DASHBOARD_ROUTES = {
   admin: "/admin/dashboard",
   teacher: "/teacher/dashboard",
   student: "/student/profile",
 };
+
+function formatAnnouncementTime(value) {
+  const date = new Date(Number(value) || value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 export default function Navbar({ onMenu = null }) {
   const { user, profile, role } = useAuth();
@@ -25,6 +38,8 @@ export default function Navbar({ onMenu = null }) {
   const [query, setQuery] = useState("");
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [announcements, setAnnouncements] = useState([]);
+  const [announcementsError, setAnnouncementsError] = useState("");
 
   useEffect(() => {
     if (location.pathname === "/library" || location.pathname === "/student/search") {
@@ -43,6 +58,30 @@ export default function Navbar({ onMenu = null }) {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, []);
+
+  // Live school announcements for the signed-in user (filtered by audience + expiry)
+  useEffect(() => {
+    if (!user?.uid) {
+      setAnnouncements([]);
+      setAnnouncementsError("");
+      return undefined;
+    }
+    setAnnouncementsError("");
+    const unsubscribe = subscribeVisibleAnnouncements(
+      { role, profile },
+      (list) => setAnnouncements(list),
+      (error) => {
+        console.warn("Unable to load announcements:", error);
+        setAnnouncementsError(error?.message || "Unable to load announcements.");
+        setAnnouncements([]);
+      },
+    );
+    return () => {
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
+  }, [user?.uid, role, profile?.gradeLevel, profile?.grade, profile?.section, profile?.role]);
+
+  const unreadCount = announcements.length;
 
   function handleSearch(event) {
     event.preventDefault();
@@ -127,18 +166,94 @@ export default function Navbar({ onMenu = null }) {
               <button
                 className="lms-icon-button"
                 type="button"
-                aria-label="Open notifications"
+                aria-label={unreadCount ? `Open notifications, ${unreadCount} announcements` : "Open notifications"}
                 aria-expanded={notificationsOpen}
                 aria-controls="notification-panel"
                 onClick={() => setNotificationsOpen((open) => !open)}
+                style={{ position: "relative" }}
               >
                 <Bell size={19} aria-hidden="true" />
+                {unreadCount > 0 && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: "absolute",
+                      top: 2,
+                      right: 2,
+                      minWidth: 16,
+                      height: 16,
+                      padding: "0 4px",
+                      borderRadius: 999,
+                      background: "#dc2626",
+                      color: "#fff",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      lineHeight: "16px",
+                      textAlign: "center",
+                    }}
+                  >
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
               </button>
 
               {notificationsOpen && (
-                <div id="notification-panel" className="lms-notification-panel" role="status">
-                  <strong>Notifications</strong>
-                  <p>You are all caught up. New school updates will appear here.</p>
+                <div
+                  id="notification-panel"
+                  className="lms-notification-panel"
+                  role="region"
+                  aria-label="School announcements"
+                  style={{ minWidth: 320, maxWidth: 380, maxHeight: 420, overflowY: "auto" }}
+                >
+                  <strong>Announcements</strong>
+                  {announcementsError ? (
+                    <p style={{ color: "#b91c1c" }}>{announcementsError}</p>
+                  ) : announcements.length === 0 ? (
+                    <p>You are all caught up. New school announcements will appear here.</p>
+                  ) : (
+                    <ul style={{ listStyle: "none", margin: "0.75rem 0 0", padding: 0, display: "grid", gap: "0.65rem" }}>
+                      {announcements.map((item) => (
+                        <li
+                          key={item.id}
+                          style={{
+                            border: "1px solid #e2e8f0",
+                            borderRadius: 12,
+                            padding: "0.7rem 0.8rem",
+                            background: item.priority === "urgent" ? "#fef2f2" : item.priority === "important" ? "#fff7ed" : "#f8fafc",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                letterSpacing: "0.04em",
+                                textTransform: "uppercase",
+                                color: item.priority === "urgent" ? "#b91c1c" : item.priority === "important" ? "#c2410c" : "#475569",
+                              }}
+                            >
+                              {item.priority || "normal"}
+                            </span>
+                            <small style={{ color: "#64748b" }}>{formatAnnouncementTime(item.createdAt)}</small>
+                          </div>
+                          <strong style={{ display: "block", fontSize: "0.95rem" }}>{item.title}</strong>
+                          <p style={{ margin: "0.25rem 0 0", fontSize: "0.875rem", color: "#334155", whiteSpace: "pre-wrap" }}>
+                            {item.message}
+                          </p>
+                          <small style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
+                            {item.audience === "class"
+                              ? `${item.grade || ""} ${item.section || ""}`.trim() || "Class"
+                              : item.audience === "teachers"
+                                ? "Teachers"
+                                : item.audience === "students"
+                                  ? "Students"
+                                  : "All users"}
+                            {item.createdByName ? ` · ${item.createdByName}` : ""}
+                          </small>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
             </div>

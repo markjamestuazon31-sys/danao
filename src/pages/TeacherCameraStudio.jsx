@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
+  Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -32,6 +33,7 @@ import {
   CAMERA_TRACKS,
   cameraItemIsComplete,
   createEmptyCameraItems,
+  deleteTeacherCameraProgram,
   getTeacherCameraPrograms,
   importCameraItemsFromText,
   saveTeacherCameraProgram,
@@ -39,6 +41,14 @@ import {
 } from "../services/cameraContentService";
 import { extractDocumentText } from "../utils/documentTextExtractor";
 import { getLearningWeek } from "../utils/gameEngine";
+
+function toLocalDateTime(value) {
+  if (!value) return "";
+  const date = new Date(Number(value) || value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 function newForm(classOption) {
   return {
@@ -49,6 +59,7 @@ function newForm(classOption) {
     title: "",
     competency: "",
     instructions: "",
+    expiresAt: "",
     questions: createEmptyCameraItems("math"),
   };
 }
@@ -119,6 +130,7 @@ export default function TeacherCameraStudio() {
         title: selectedProgram.title || "",
         competency: selectedProgram.competency || "",
         instructions: selectedProgram.instructions || "",
+        expiresAt: toLocalDateTime(selectedProgram.expiresAt),
         questions: selectedProgram.questions,
       }));
     } else {
@@ -127,6 +139,7 @@ export default function TeacherCameraStudio() {
         title: "",
         competency: "",
         instructions: "",
+        expiresAt: "",
         questions: createEmptyCameraItems(current.track),
       }));
     }
@@ -153,6 +166,7 @@ export default function TeacherCameraStudio() {
       title: "",
       competency: "",
       instructions: "",
+      expiresAt: "",
       questions: createEmptyCameraItems(track),
     }));
   }
@@ -205,6 +219,45 @@ export default function TeacherCameraStudio() {
     } catch (error) {
       setMessageType("error");
       setMessage(error.message || "Camera content could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeLevel() {
+    if (!selectedProgram) return;
+    const label = `${CAMERA_TRACKS[form.track]?.label || "Camera"} · Level ${form.level}`;
+    const confirmed = window.confirm(
+      `Delete ${label} for ${form.grade} · ${form.section}?\n\nThis removes the draft and any published version. Students will no longer see this level.`
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const classKeyValue = classes.find((item) => item.grade === form.grade && item.section === form.section)?.key;
+      await deleteTeacherCameraProgram(profile, {
+        classKey: classKeyValue || selectedProgram.classKey,
+        track: form.track,
+        level: form.level,
+      });
+      setPrograms((current) => current.filter((item) => !(
+        item.classKey === (classKeyValue || selectedProgram.classKey)
+        && item.track === form.track
+        && Number(item.level) === Number(form.level)
+      )));
+      setForm((current) => ({
+        ...current,
+        title: "",
+        competency: "",
+        instructions: "",
+        expiresAt: "",
+        questions: createEmptyCameraItems(current.track),
+      }));
+      setMessageType("success");
+      setMessage(`${label} was deleted.`);
+    } catch (error) {
+      setMessageType("error");
+      setMessage(error.message || "Camera level could not be deleted.");
     } finally {
       setBusy(false);
     }
@@ -300,7 +353,13 @@ export default function TeacherCameraStudio() {
                 <div className="teacher-camera-level-grid">
                   {CAMERA_LEVELS.map((level) => {
                     const program = scopedPrograms.find((item) => item.level === level);
-                    return <button type="button" key={level} className={`${form.level === level ? "is-active" : ""} ${program?.status === "published" ? "is-published" : program ? "is-draft" : ""}`} onClick={() => { setForm((current) => ({ ...current, level })); setOpenSetupStep(null); }}><span>{level}</span><div><strong>Level {level}</strong><small>{program?.status === "published" ? "Published" : program ? "Draft" : "Not created"}</small></div>{program?.status === "published" && <CheckCircle2 size={16} />}</button>;
+                    const expired = program?.status === "published" && program?.expiresAt && Number(program.expiresAt) <= Date.now();
+                    const statusLabel = !program
+                      ? "Not created"
+                      : program.status === "published"
+                        ? (expired ? "Expired" : program.expiresAt ? "Published · timed" : "Published")
+                        : "Draft";
+                    return <button type="button" key={level} className={`${form.level === level ? "is-active" : ""} ${program?.status === "published" && !expired ? "is-published" : program ? "is-draft" : ""}`} onClick={() => { setForm((current) => ({ ...current, level })); setOpenSetupStep(null); }}><span>{level}</span><div><strong>Level {level}</strong><small>{statusLabel}</small></div>{program?.status === "published" && !expired && <CheckCircle2 size={16} />}</button>;
                   })}
                 </div>
               </div>
@@ -387,19 +446,57 @@ export default function TeacherCameraStudio() {
           </section>
 
           <section id="teacher-camera-review-publish" className={`teacher-camera-review ${validation.valid ? "is-ready" : ""}`}>
-            <div className="teacher-camera-review__head"><span><ShieldCheck size={22} /></span><div><small>STEP 5</small><h3>Review and publish</h3><p>Nothing reaches students until you press Publish.</p></div><b>{validation.valid ? "Ready to publish" : `${completedItems}/10 activities ready`}</b></div>
+            <div className="teacher-camera-review__head"><span><ShieldCheck size={22} /></span><div><small>STEP 5</small><h3>Review and publish</h3><p>Nothing reaches students until you press Publish. You can also set an optional expiration and delete existing levels.</p></div><b>{validation.valid ? "Ready to publish" : `${completedItems}/10 activities ready`}</b></div>
             {!validation.valid && <div className="teacher-camera-validation"><Target size={18} /><div><strong>{validation.errors.length} publishing check{validation.errors.length === 1 ? "" : "s"} remaining</strong><span>{validation.errors.slice(0, 3).join(" ")}</span></div></div>}
             <div className="teacher-camera-review__summary">
               <div><span>Destination</span><strong>{form.grade} · {form.section}</strong></div>
               <div><span>Activity</span><strong>{CAMERA_TRACKS[form.track].label}</strong></div>
               <div><span>Level</span><strong>Level {form.level}</strong></div>
               <div><span>Ready items</span><strong>{completedItems} of 10</strong></div>
+              <div><span>Status</span><strong>{selectedProgram?.status === "published" ? "Published (editing)" : selectedProgram ? "Draft (editing)" : "New level"}</strong></div>
             </div>
-            <div className="teacher-camera-actions">
-              <button type="button" className="secondary-button" onClick={() => void save("draft")} disabled={busy || !classes.length}><Save size={18} /> {busy ? "Saving…" : "Save private draft"}</button>
-              <button type="button" className="success-button" onClick={() => void save("published")} disabled={busy || !validation.valid || !classes.length}><Send size={18} /> {busy ? "Publishing…" : `Publish Level ${form.level} to ${form.section}`}</button>
+
+            <label className="teacher-camera-field" style={{ display: "block", margin: "1rem 0" }}>
+              <span style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontWeight: 600 }}>
+                <CalendarDays size={16} /> Expiration <small style={{ fontWeight: 400, opacity: 0.75 }}>(optional — same as lessons)</small>
+              </span>
+              <input
+                type="datetime-local"
+                value={form.expiresAt || ""}
+                onChange={(event) => setForm((current) => ({ ...current, expiresAt: event.target.value }))}
+                disabled={busy}
+                style={{ width: "100%", marginTop: "0.4rem", padding: "0.55rem 0.75rem", borderRadius: "10px", border: "1px solid #cbd5e1" }}
+              />
+              <small style={{ display: "block", marginTop: "0.35rem", opacity: 0.8 }}>
+                {form.expiresAt
+                  ? `Students can play until ${new Date(form.expiresAt).toLocaleString()}. After that the level is hidden automatically.`
+                  : "Leave empty for no expiration. Students can play this level until you delete it or set an end time."}
+              </small>
+            </label>
+
+            <div className="teacher-camera-actions" style={{ flexWrap: "wrap", gap: "0.6rem" }}>
+              <button type="button" className="secondary-button" onClick={() => void save("draft")} disabled={busy || !classes.length}>
+                <Save size={18} /> {busy ? "Saving…" : selectedProgram ? "Save changes as draft" : "Save private draft"}
+              </button>
+              <button type="button" className="success-button" onClick={() => void save("published")} disabled={busy || !validation.valid || !classes.length}>
+                <Send size={18} /> {busy ? "Publishing…" : selectedProgram?.status === "published" ? `Update published Level ${form.level}` : `Publish Level ${form.level} to ${form.section}`}
+              </button>
+              {selectedProgram && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void removeLevel()}
+                  disabled={busy}
+                  style={{ color: "#b91c1c", borderColor: "#fecaca" }}
+                >
+                  <Trash2 size={18} /> Delete this level
+                </button>
+              )}
             </div>
-            <p className="teacher-camera-publish-note"><ShieldCheck size={14} /> Only students in {form.grade} · {form.section} can open this level. Republishing replaces the previous content for this class, activity, and level.</p>
+            <p className="teacher-camera-publish-note">
+              <ShieldCheck size={14} /> Only students in {form.grade} · {form.section} can open this level.
+              {selectedProgram ? " You are editing an existing level — save or publish to update it, or delete to remove it." : " Republishing replaces the previous content for this class, activity, and level."}
+            </p>
           </section>
         </main>
       </div>

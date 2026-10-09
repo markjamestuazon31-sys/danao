@@ -30,6 +30,11 @@ const GRADE_FILTERS = ["All Grades", ...GRADES];
 const APPROVED_SYSTEM_GAME_ROUTES = new Set([
   "/student/camera-math",
   "/student/camera-reading-english",
+  "/student/camera-sort",
+  "/student/camera-sentence",
+  "/student/camera-spelling",
+  "/student/camera-picture",
+  "/student/camera-truefalse",
 ]);
 const RETIRED_DEMO_TITLES = new Set([
   "learning game",

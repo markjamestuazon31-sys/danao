@@ -224,10 +224,21 @@ function normalizeProgram(record, fallback = {}) {
   if (!record || typeof record !== "object") return null;
   const track = trackId(record.track || fallback.track);
   const level = integer(record.level, fallback.level || 1, 1, 10);
+  const expiresAt = record.expiresAt == null || record.expiresAt === ""
+    ? null
+    : Number(record.expiresAt) || null;
   return {
     ...record, track, level, title: text(record.title, 120), competency: text(record.competency, 600),
     instructions: text(record.instructions, 600), questions: normalizeCameraItems(record.questions, track),
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
   };
+}
+
+/** True when the program is still within its optional availability window. */
+export function isCameraProgramActive(program, now = Date.now()) {
+  if (!program || program.status !== "published") return false;
+  if (program.expiresAt == null) return true;
+  return Number(program.expiresAt) > now;
 }
 
 export async function getTeacherCameraPrograms(profile) {
@@ -277,12 +288,20 @@ export async function saveTeacherCameraProgram(teacherProfile, input) {
 
   const now = Date.now();
   const week = getLearningWeek();
+  const expiresAtRaw = input?.expiresAt;
+  const expiresAt = expiresAtRaw == null || expiresAtRaw === ""
+    ? null
+    : (typeof expiresAtRaw === "number" ? expiresAtRaw : new Date(expiresAtRaw).getTime());
+  if (expiresAt != null && (!Number.isFinite(expiresAt) || expiresAt <= now)) {
+    throw new Error("Expiration must be a future date and time.");
+  }
   const record = clean({
     ...targetClass, track, cameraKind: meta.kind, subject: meta.subject, level,
     title: text(input.title, 120) || `${meta.label} · Level ${level}`,
     competency: text(input.competency, 600), instructions: text(input.instructions, 600), questions: validation.items,
     status, teacherId: currentUser.uid, teacherName: text(serverProfile?.name || teacherProfile?.name || "Jidanao teacher", 100),
     weekKey: track === "math" ? week.key : "ongoing", weekLabel: track === "math" ? week.label : `Ongoing ${meta.label} practice`,
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
     createdAt: Number(existing.createdAt || now), updatedAt: now, ...(status === "published" ? { publishedAt: now } : {}),
   });
   await update(ref(database), {
@@ -292,14 +311,34 @@ export async function saveTeacherCameraProgram(teacherProfile, input) {
   return normalizeProgram(record);
 }
 
+/** Permanently remove a camera level for a class + track + level (draft and published). */
+export async function deleteTeacherCameraProgram(teacherProfile, { classKey, track, level } = {}) {
+  const currentUser = auth.currentUser;
+  if (!currentUser) throw new Error("Sign in again before deleting camera content.");
+  const normalizedTrack = trackId(track);
+  const normalizedLevel = integer(level, 0, 1, 10);
+  const key = text(classKey, 80);
+  if (!key) throw new Error("Choose the class that owns this camera level.");
+  if (!teacherCanAccessClass(teacherProfile, key) && teacherProfile?.teachingScope !== "schoolwide") {
+    throw new Error("You can only delete camera content for classes assigned to you.");
+  }
+  const relativePath = programPath(key, normalizedTrack, normalizedLevel);
+  await update(ref(database), {
+    [`cameraPrograms/${relativePath}`]: null,
+    [`cameraPublished/${relativePath}`]: null,
+  });
+  return { classKey: key, track: normalizedTrack, level: normalizedLevel };
+}
+
 export async function getPublishedCameraProgramsForStudent(profile) {
   const classKey = text(profile?.classKey, 80);
   if (!classKey) return [];
   const snapshot = await get(ref(database, `cameraPublished/${classKey}`));
   if (!snapshot.exists()) return [];
+  const now = Date.now();
   return Object.entries(snapshot.val()).flatMap(([track, levels]) => Object.entries(levels || {}).map(([levelKey, record]) => normalizeProgram(record, {
     classKey, track, level: Number(levelKey.replace(/\D/g, "")) || 1,
-  }))).filter((program) => program?.status === "published");
+  }))).filter((program) => program?.status === "published" && isCameraProgramActive(program, now));
 }
 
 export function cameraProgramQuestions(program) {
