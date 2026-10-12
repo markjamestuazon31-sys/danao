@@ -29,6 +29,11 @@ import {
 } from "../data/schoolClasses";
 import { getActiveClassFields, getSchoolStructure } from "./schoolStructureService";
 import { ensureSubjectForGrade } from "../data/curriculum";
+import {
+  filterSystemCameraCatalog,
+  subscribePublishedCameraProgramsForStudent,
+} from "./cameraContentService";
+import { classFields as resolveClassFields } from "../data/schoolClasses";
 
 const MAX_TEXT_MATERIAL_BYTES = 500 * 1024;
 const TEXT_FILE_EXTENSIONS = ["txt", "md", "markdown", "csv", "json"];
@@ -90,11 +95,26 @@ function flattenPublishedCatalog(value) {
   return results.filter(isCatalogActive);
 }
 
-function mergeSystemCatalog(items, gradeLevel) {
+/**
+ * Merge remote publishedCatalog items with built-in camera game templates.
+ * When `cameraPrograms` is provided (student class view), only system camera
+ * games that still have at least one active teacher-published level are shown.
+ * When omitted (public home / admin), all system templates remain visible.
+ */
+function mergeSystemCatalog(items, gradeLevel, cameraPrograms = null) {
   const system = systemCatalogForGrade(gradeLevel);
   const ids = new Set(system.map((item) => `${item.type}:${item.id}`));
   const visibleItems = items.filter((item) => !String(item.id || "").startsWith("camera-reading-filipino-"));
-  return [...system, ...visibleItems.filter((item) => !ids.has(`${item.type}:${item.id}`))];
+  const remote = visibleItems.filter((item) => !ids.has(`${item.type}:${item.id}`));
+
+  if (cameraPrograms == null) {
+    // Public / admin catalog: keep legacy behavior (all system templates).
+    return [...system, ...remote];
+  }
+
+  // Student catalog: only surface camera tracks the teacher has published for this class.
+  const liveSystem = filterSystemCameraCatalog(system, cameraPrograms);
+  return [...liveSystem, ...remote];
 }
 
 function filterCatalogForSection(items, gradeLevel, sectionValue) {
@@ -280,29 +300,105 @@ export async function getPublishedCatalogForGrade(gradeLevel, section = "") {
   return filterCatalogForSection(mergeSystemCatalog(remote, gradeLevel), gradeLevel, section);
 }
 
-export function subscribePublishedCatalogForGrade(gradeLevel, onData, onError, section = "") {
+/**
+ * Live student catalog for a grade (+ optional section / class).
+ * Joins /publishedCatalog with /cameraPublished/{classKey} so teacher deletes,
+ * drafts, and expirations remove camera game cards from the student view in real time.
+ *
+ * @param {string} gradeLevel
+ * @param {(items: object[]) => void} onData
+ * @param {(error: Error) => void} [onError]
+ * @param {string} [section]
+ * @param {string} [classKey] explicit class key; derived from grade+section when omitted
+ */
+export function subscribePublishedCatalogForGrade(gradeLevel, onData, onError, section = "", classKey = "") {
   const key = gradeToKey(gradeLevel);
   let raw = null;
+  let cameraPrograms = [];
+  let cameraReady = !classKey; // if no class, skip camera gate (treat as empty live set below)
+  let catalogReady = false;
   let timer = null;
   let stopped = false;
+
+  const resolvedClassKey = (() => {
+    const explicit = String(classKey || "").trim();
+    if (explicit) return explicit;
+    try {
+      return resolveClassFields(gradeLevel, section)?.classKey || "";
+    } catch {
+      return "";
+    }
+  })();
+
+  // When we have a student class, start with empty camera list until first snapshot
+  // so we never flash deleted system games before the join completes.
+  if (resolvedClassKey) cameraReady = false;
+
   function emit() {
     if (stopped) return;
+    if (!catalogReady || (resolvedClassKey && !cameraReady)) return;
     clearTimeout(timer);
     const items = raw ? flattenPublishedCatalog({ [key]: raw }) : [];
-    onData(filterCatalogForSection(mergeSystemCatalog(items, gradeLevel), gradeLevel, section));
+    // Pass cameraPrograms (array) so mergeSystemCatalog filters system camera cards.
+    // Empty array => no system camera cards (teacher deleted everything).
+    const merged = mergeSystemCatalog(items, gradeLevel, resolvedClassKey ? cameraPrograms : null);
+    onData(filterCatalogForSection(merged, gradeLevel, section));
     const now = Date.now();
-    const boundaries = [...Object.values(raw?.lessons || {}), ...Object.values(raw?.games || {})]
+    const catalogBoundaries = [...Object.values(raw?.lessons || {}), ...Object.values(raw?.games || {})]
       .flatMap((item) => [Number(item.publishAt || 0), Number(item.expiresAt || 0)])
       .filter((time) => Number.isFinite(time) && time > now);
-    if (boundaries.length) timer = setTimeout(emit, Math.min(2147483647, Math.max(20, Math.min(...boundaries) - now + 20)));
+    const cameraBoundaries = (cameraPrograms || [])
+      .map((program) => Number(program.expiresAt || 0))
+      .filter((time) => Number.isFinite(time) && time > now);
+    const boundaries = [...catalogBoundaries, ...cameraBoundaries];
+    if (boundaries.length) {
+      timer = setTimeout(emit, Math.min(2147483647, Math.max(20, Math.min(...boundaries) - now + 20)));
+    }
   }
-  const unsubscribe = onValue(ref(database, `publishedCatalog/${key}`), (snapshot) => {
-    raw = snapshot.exists() ? snapshot.val() : null;
-    emit();
-  }, (error) => { raw = null; emit(); onError?.(error); });
-  const handleVisibility = () => { if (typeof document === "undefined" || !document.hidden) emit(); };
+
+  const unsubscribeCatalog = onValue(
+    ref(database, `publishedCatalog/${key}`),
+    (snapshot) => {
+      raw = snapshot.exists() ? snapshot.val() : null;
+      catalogReady = true;
+      emit();
+    },
+    (error) => {
+      raw = null;
+      catalogReady = true;
+      emit();
+      onError?.(error);
+    },
+  );
+
+  let unsubscribeCamera = () => {};
+  if (resolvedClassKey) {
+    unsubscribeCamera = subscribePublishedCameraProgramsForStudent(
+      resolvedClassKey,
+      (programs) => {
+        cameraPrograms = programs || [];
+        cameraReady = true;
+        emit();
+      },
+      (error) => {
+        cameraPrograms = [];
+        cameraReady = true;
+        emit();
+        onError?.(error);
+      },
+    );
+  }
+
+  const handleVisibility = () => {
+    if (typeof document === "undefined" || !document.hidden) emit();
+  };
   if (typeof document !== "undefined") document.addEventListener("visibilitychange", handleVisibility);
-  return () => { stopped = true; clearTimeout(timer); unsubscribe();
+
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+    unsubscribeCatalog();
+    unsubscribeCamera();
     if (typeof document !== "undefined") document.removeEventListener("visibilitychange", handleVisibility);
   };
 }

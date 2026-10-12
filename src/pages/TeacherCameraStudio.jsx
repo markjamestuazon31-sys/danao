@@ -9,11 +9,14 @@ import {
   CircleHelp,
   ClipboardCheck,
   FileUp,
+  ImagePlus,
   Focus,
+  FolderOpen,
   Gamepad2,
   Layers3,
   LoaderCircle,
   PanelLeftOpen,
+  Pencil,
   RefreshCw,
   Save,
   Send,
@@ -37,10 +40,14 @@ import {
   getTeacherCameraPrograms,
   importCameraItemsFromText,
   saveTeacherCameraProgram,
+  choiceImageUrl,
+  choiceLabel,
   validateCameraItems,
 } from "../services/cameraContentService";
+import { uploadCameraChoiceImage } from "../services/cameraImageService";
 import { extractDocumentText } from "../utils/documentTextExtractor";
 import { getLearningWeek } from "../utils/gameEngine";
+import "../styles/camera-picture-upload.css";
 
 function toLocalDateTime(value) {
   if (!value) return "";
@@ -158,6 +165,50 @@ export default function TeacherCameraStudio() {
     setForm((current) => ({ ...current, grade: selected.grade, section: selected.section }));
   }
 
+  /** Open an existing program in the editor (folder → edit). */
+  function openProgramForEdit(program) {
+    if (!program) return;
+    setForm({
+      grade: program.grade || "",
+      section: program.section || "",
+      track: program.track || "math",
+      level: Number(program.level) || 1,
+      title: program.title || "",
+      competency: program.competency || "",
+      instructions: program.instructions || "",
+      expiresAt: toLocalDateTime(program.expiresAt),
+      questions: Array.isArray(program.questions) && program.questions.length
+        ? program.questions
+        : createEmptyCameraItems(program.track || "math"),
+    });
+    setExpandedItem(0);
+    setOpenSetupStep(null);
+    setMessageType("info");
+    setMessage(`Editing ${CAMERA_TRACKS[program.track]?.label || program.track} · Level ${program.level} for ${program.grade} · ${program.section}`);
+    window.requestAnimationFrame(() => document.getElementById("teacher-camera-content-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
+  /** Group programs like folders: track → class → levels */
+  const programFolders = useMemo(() => {
+    const byTrack = {};
+    for (const program of programs) {
+      const track = program.track || "math";
+      if (!byTrack[track]) byTrack[track] = [];
+      byTrack[track].push(program);
+    }
+    return Object.entries(byTrack)
+      .map(([track, items]) => ({
+        track,
+        meta: CAMERA_TRACKS[track] || { label: track, shortDescription: "" },
+        items: items.sort((a, b) => {
+          const classCmp = String(a.classKey || "").localeCompare(String(b.classKey || ""));
+          if (classCmp !== 0) return classCmp;
+          return Number(a.level) - Number(b.level);
+        }),
+      }))
+      .sort((a, b) => a.meta.label.localeCompare(b.meta.label));
+  }, [programs]);
+
   function selectTrack(track) {
     if (!CAMERA_TRACKS[track]) return;
     setForm((current) => ({
@@ -172,16 +223,97 @@ export default function TeacherCameraStudio() {
   }
 
   function updateItem(index, field, value, choiceIndex = -1) {
-    setForm((current) => ({
-      ...current,
-      questions: current.questions.map((item, itemIndex) => {
-        if (itemIndex !== index) return item;
-        if (field === "choice") {
-          return { ...item, choices: item.choices.map((choice, indexValue) => indexValue === choiceIndex ? value : choice) };
-        }
-        return { ...item, [field]: value };
-      }),
-    }));
+    setForm((current) => {
+      const trackMeta = CAMERA_TRACKS[current.track] || {};
+      return {
+        ...current,
+        questions: current.questions.map((item, itemIndex) => {
+          if (itemIndex !== index) return item;
+          if (field === "choice") {
+            const nextChoices = item.choices.map((choice, indexValue) => {
+              if (indexValue !== choiceIndex) return choice;
+              if (choice && typeof choice === "object") {
+                return { ...choice, label: value };
+              }
+              return value;
+            });
+            // For sequence activities (Word Builder / Sentence Builder) keep the
+            // "Correct word / sentence" field in sync with the ordered blocks so
+            // teachers immediately see what the learner must build.
+            if (trackMeta.kind === "sequence") {
+              const labels = nextChoices.map((c) => choiceLabel(c));
+              if (labels.every(Boolean)) {
+                const separator = trackMeta.sequenceSeparator ?? " ";
+                return {
+                  ...item,
+                  choices: nextChoices,
+                  answer: labels.join(separator),
+                };
+              }
+            }
+            return {
+              ...item,
+              choices: nextChoices,
+            };
+          }
+          if (field === "choiceImage") {
+            return {
+              ...item,
+              choices: item.choices.map((choice, indexValue) => {
+                if (indexValue !== choiceIndex) return choice;
+                const label = choiceLabel(choice);
+                return { label, imageUrl: value || null };
+              }),
+            };
+          }
+          return { ...item, [field]: value };
+        }),
+      };
+    });
+  }
+
+  async function uploadChoiceImage(itemIndex, choiceIndex, file) {
+    if (!file) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await uploadCameraChoiceImage(file, {
+        track: form.track,
+        level: form.level,
+        itemIndex,
+        choiceIndex,
+      });
+      updateItem(itemIndex, "choiceImage", result.url, choiceIndex);
+      setMessageType("success");
+      setMessage(`Picture added to option ${String.fromCharCode(65 + choiceIndex)}. Students will see it when they play.`);
+    } catch (error) {
+      setMessageType("error");
+      setMessage(error.message || "Picture could not be uploaded.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadPromptImage(itemIndex, file) {
+    if (!file) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await uploadCameraChoiceImage(file, {
+        track: form.track,
+        level: form.level,
+        itemIndex,
+        choiceIndex: 99,
+      });
+      updateItem(itemIndex, "promptImageUrl", result.url);
+      setMessageType("success");
+      setMessage("Clue picture added. Students will see it above the question.");
+    } catch (error) {
+      setMessageType("error");
+      setMessage(error.message || "Clue picture could not be uploaded.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function importDocument(file) {
@@ -208,6 +340,10 @@ export default function TeacherCameraStudio() {
     setBusy(true);
     setMessage("");
     try {
+      if (status === "published" && !validation.valid) {
+        const detail = (validation.errors || []).slice(0, 4).join(" ");
+        throw new Error(detail || `Finish all 10 ${CAMERA_TRACKS[form.track]?.label || "camera"} activities before publishing.`);
+      }
       const saved = await saveTeacherCameraProgram(profile, { ...form, status });
       setPrograms((current) => [saved, ...current.filter((item) => !(
         item.classKey === saved.classKey && item.track === saved.track && item.level === saved.level
@@ -224,35 +360,54 @@ export default function TeacherCameraStudio() {
     }
   }
 
-  async function removeLevel() {
-    if (!selectedProgram) return;
-    const label = `${CAMERA_TRACKS[form.track]?.label || "Camera"} · Level ${form.level}`;
+  async function removeLevel(override = null) {
+    const target = override || (selectedProgram ? {
+      classKey: selectedProgram.classKey,
+      track: form.track,
+      level: form.level,
+      grade: form.grade,
+      section: form.section,
+      label: `${CAMERA_TRACKS[form.track]?.label || "Camera"} · Level ${form.level}`,
+    } : null);
+    if (!target) return;
+    const label = target.label || `${CAMERA_TRACKS[target.track]?.label || "Camera"} · Level ${target.level}`;
+    const gradeLabel = target.grade || form.grade;
+    const sectionLabel = target.section || form.section;
     const confirmed = window.confirm(
-      `Delete ${label} for ${form.grade} · ${form.section}?\n\nThis removes the draft and any published version. Students will no longer see this level.`
+      `Delete ${label} for ${gradeLabel} · ${sectionLabel}?\n\nThis removes the draft and any published version. Students will no longer see this level.`
     );
     if (!confirmed) return;
     setBusy(true);
     setMessage("");
     try {
-      const classKeyValue = classes.find((item) => item.grade === form.grade && item.section === form.section)?.key;
+      const classKeyValue = target.classKey
+        || classes.find((item) => item.grade === (target.grade || form.grade) && item.section === (target.section || form.section))?.key;
       await deleteTeacherCameraProgram(profile, {
-        classKey: classKeyValue || selectedProgram.classKey,
-        track: form.track,
-        level: form.level,
+        classKey: classKeyValue,
+        track: target.track || form.track,
+        level: target.level || form.level,
       });
       setPrograms((current) => current.filter((item) => !(
-        item.classKey === (classKeyValue || selectedProgram.classKey)
-        && item.track === form.track
-        && Number(item.level) === Number(form.level)
+        item.classKey === classKeyValue
+        && item.track === (target.track || form.track)
+        && Number(item.level) === Number(target.level || form.level)
       )));
-      setForm((current) => ({
-        ...current,
-        title: "",
-        competency: "",
-        instructions: "",
-        expiresAt: "",
-        questions: createEmptyCameraItems(current.track),
-      }));
+      // Clear editor only if we deleted the currently open level
+      if (
+        (target.track || form.track) === form.track
+        && Number(target.level || form.level) === Number(form.level)
+        && (target.grade || form.grade) === form.grade
+        && (target.section || form.section) === form.section
+      ) {
+        setForm((current) => ({
+          ...current,
+          title: "",
+          competency: "",
+          instructions: "",
+          expiresAt: "",
+          questions: createEmptyCameraItems(current.track),
+        }));
+      }
       setMessageType("success");
       setMessage(`${label} was deleted.`);
     } catch (error) {
@@ -300,6 +455,87 @@ export default function TeacherCameraStudio() {
 
       {!classes.length && <div className="alert error">No Grade + Section is assigned to your account. Ask the administrator to assign a class first.</div>}
       {message && <div className={`alert ${messageType}`} role="status">{message}</div>}
+
+      {/* My created games — folder view with edit / delete */}
+      <section className="teacher-camera-library" aria-label="Games you created">
+        <header className="teacher-camera-library__head">
+          <div>
+            <span><FolderOpen size={18} /> MY CAMERA GAMES</span>
+            <h2>Games you created</h2>
+            <p>Open a folder to see every level you drafted or published. Edit loads it into the steps below; Delete removes it for that class.</p>
+          </div>
+          <button type="button" className="secondary-button" onClick={() => void loadPrograms()} disabled={loading || busy}>
+            <RefreshCw size={16} className={loading ? "spin" : undefined} /> {loading ? "Refreshing…" : "Refresh"}
+          </button>
+        </header>
+        {loading && programs.length === 0 ? (
+          <div className="teacher-camera-library__empty"><LoaderCircle className="spin" size={28} /> Loading your games…</div>
+        ) : programFolders.length === 0 ? (
+          <div className="teacher-camera-library__empty">
+            <FolderOpen size={32} />
+            <strong>No games yet</strong>
+            <span>Use the five steps below to create your first camera level. It will appear here as a folder.</span>
+          </div>
+        ) : (
+          <div className="teacher-camera-library__folders">
+            {programFolders.map(({ track, meta, items }) => {
+              const Icon = TRACK_ICONS[track] || Camera;
+              const publishedCount = items.filter((p) => p.status === "published").length;
+              return (
+                <details key={track} className="teacher-camera-folder" open={items.some((p) => p.track === form.track && p.grade === form.grade && p.section === form.section && Number(p.level) === Number(form.level))}>
+                  <summary>
+                    <Icon size={22} />
+                    <div>
+                      <strong>{meta.label}</strong>
+                      <small>{items.length} level{items.length === 1 ? "" : "s"} · {publishedCount} published</small>
+                    </div>
+                    <ChevronDown size={18} className="teacher-camera-folder__chevron" />
+                  </summary>
+                  <ul className="teacher-camera-folder__list">
+                    {items.map((program) => {
+                      const expired = program.status === "published" && program.expiresAt && Number(program.expiresAt) <= Date.now();
+                      const isActive = program.track === form.track && program.grade === form.grade && program.section === form.section && Number(program.level) === Number(form.level);
+                      return (
+                        <li key={`${program.classKey}-${program.track}-${program.level}`} className={isActive ? "is-active" : ""}>
+                          <div className="teacher-camera-folder__meta">
+                            <strong>Level {program.level}</strong>
+                            <span>{program.grade} · {program.section}</span>
+                            <small className={`teacher-camera-folder__status is-${program.status}${expired ? " is-expired" : ""}`}>
+                              {expired ? "Expired" : program.status === "published" ? "Published" : "Draft"}
+                            </small>
+                            {program.title && <em>{program.title}</em>}
+                          </div>
+                          <div className="teacher-camera-folder__actions">
+                            <button type="button" className="secondary-button" onClick={() => openProgramForEdit(program)} disabled={busy} title="Edit this level">
+                              <Pencil size={15} /> Edit
+                            </button>
+                            <button
+                              type="button"
+                              className="danger-button"
+                              disabled={busy}
+                              onClick={() => void removeLevel({
+                                classKey: program.classKey,
+                                track: program.track,
+                                level: program.level,
+                                grade: program.grade,
+                                section: program.section,
+                                label: `${meta.label} · Level ${program.level}`,
+                              })}
+                              title="Delete this level"
+                            >
+                              <Trash2 size={15} /> Delete
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </details>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       <section className={`teacher-camera-steps ${openSetupStep ? "has-open-step" : ""}`} aria-label="Camera content creation steps">
         <nav className="teacher-camera-steps__bar" aria-label="Camera content workflow">
@@ -426,13 +662,89 @@ export default function TeacherCameraStudio() {
               ) : (
                 <div className="teacher-camera-item__form">
                   <label className="span-2">{trackMeta.questionLabel}<textarea rows={3} value={activeItem.prompt} onChange={(event) => updateItem(activeItemIndex, "prompt", event.target.value)} placeholder={trackMeta.questionPlaceholder} /></label>
+                  {trackMeta.supportsImages && (
+                    <div className="span-2 teacher-camera-image-field">
+                      <div className="teacher-camera-image-field__head">
+                        <strong>Optional clue picture</strong>
+                        <span>Shown above the question for the student</span>
+                      </div>
+                      {activeItem.promptImageUrl ? (
+                        <div className="teacher-camera-image-preview">
+                          <img src={activeItem.promptImageUrl} alt="Clue preview" />
+                          <button type="button" className="ghost-button" onClick={() => updateItem(activeItemIndex, "promptImageUrl", null)} disabled={busy}>Remove</button>
+                        </div>
+                      ) : (
+                        <label className="teacher-camera-image-upload">
+                          <input type="file" accept="image/*" disabled={busy} onChange={(event) => void uploadPromptImage(activeItemIndex, event.target.files?.[0])} />
+                          <ImagePlus size={18} />
+                          <span>Upload clue picture</span>
+                        </label>
+                      )}
+                    </div>
+                  )}
                   <label>{trackMeta.answerLabel}{trackMeta.kind === "boolean"
                     ? <select value={activeItem.answer} onChange={(event) => updateItem(activeItemIndex, "answer", event.target.value)}><option value="">Choose answer</option><option value="True">True</option><option value="False">False</option></select>
-                    : <input value={activeItem.answer} onChange={(event) => updateItem(activeItemIndex, "answer", event.target.value)} placeholder={trackMeta.answerPlaceholder} />}</label>
+                    : <input
+                        value={activeItem.answer}
+                        onChange={(event) => updateItem(activeItemIndex, "answer", event.target.value)}
+                        placeholder={trackMeta.kind === "sequence"
+                          ? "Auto-filled from the blocks below (or type the full correct answer)"
+                          : trackMeta.answerPlaceholder}
+                        title={trackMeta.kind === "sequence" ? "This must equal the blocks joined in order. It is auto-updated when you fill all blocks." : undefined}
+                      />}</label>
                   <label>Skill<input value={activeItem.skill} onChange={(event) => updateItem(activeItemIndex, "skill", event.target.value)} placeholder={trackMeta.kind === "sequence" ? "Word order, grammar, spelling…" : "Name the learning skill"} /></label>
                   <div className={`teacher-camera-choices span-2 ${trackMeta.kind === "sequence" ? "is-sequence" : ""}`}>
-                    <div className="teacher-camera-choices__guide"><strong>{trackMeta.kind === "sequence" ? "Enter blocks in the correct order" : `${trackMeta.choiceLabel}s`}</strong><span>{trackMeta.kind === "sequence" ? "The game will shuffle these blocks for the learner." : "The learner will pinch and drag one of these choices."}</span></div>
-                    {activeItem.choices.map((choice, choiceIndex) => <label key={choiceIndex}><span>{trackMeta.kind === "sequence" ? choiceIndex + 1 : String.fromCharCode(65 + choiceIndex)}</span><input value={choice} disabled={trackMeta.kind === "boolean"} onChange={(event) => updateItem(activeItemIndex, "choice", event.target.value, choiceIndex)} placeholder={`${trackMeta.choiceLabel} ${choiceIndex + 1}`} /></label>)}
+                    <div className="teacher-camera-choices__guide">
+                      <strong>{trackMeta.kind === "sequence" ? "Enter blocks in the correct order" : `${trackMeta.choiceLabel}s`}</strong>
+                      <span>
+                        {trackMeta.kind === "sequence"
+                          ? "Type the letters / syllables / words that form the answer when read from left to right. The game will shuffle these blocks for the learner. The Correct word/sentence above is auto-filled when all 4 blocks are complete."
+                          : "The learner will pinch and drag one of these choices."}
+                      </span>
+                    </div>
+                    {activeItem.choices.map((choice, choiceIndex) => {
+                      const labelValue = choiceLabel(choice);
+                      const imageUrl = choiceImageUrl(choice);
+                      return (
+                        <div className={`teacher-camera-choice-row ${trackMeta.supportsImages ? "has-image" : ""}`} key={choiceIndex}>
+                          <label>
+                            <span>{trackMeta.kind === "sequence" ? choiceIndex + 1 : String.fromCharCode(65 + choiceIndex)}</span>
+                            <input
+                              value={labelValue}
+                              disabled={trackMeta.kind === "boolean"}
+                              onChange={(event) => updateItem(activeItemIndex, "choice", event.target.value, choiceIndex)}
+                              placeholder={`${trackMeta.choiceLabel} ${choiceIndex + 1}`}
+                            />
+                          </label>
+                          {trackMeta.supportsImages && (
+                            <div className="teacher-camera-choice-image">
+                              {imageUrl ? (
+                                <>
+                                  <img src={imageUrl} alt={`Option ${String.fromCharCode(65 + choiceIndex)}`} />
+                                  <button type="button" className="ghost-button" onClick={() => updateItem(activeItemIndex, "choiceImage", null, choiceIndex)} disabled={busy}>Remove</button>
+                                </>
+                              ) : (
+                                <label className="teacher-camera-image-upload is-compact">
+                                  <input type="file" accept="image/*" disabled={busy} onChange={(event) => void uploadChoiceImage(activeItemIndex, choiceIndex, event.target.files?.[0])} />
+                                  <ImagePlus size={16} />
+                                  <span>Picture</span>
+                                </label>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {trackMeta.kind === "sequence" && (
+                      <div className="teacher-camera-sequence-preview" style={{ gridColumn: "1 / -1", marginTop: "0.5rem", padding: "0.6rem 0.85rem", background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: "10px", fontSize: "0.92rem" }}>
+                        <strong style={{ display: "block", marginBottom: "0.2rem", color: "#0369a1" }}>What the learner must build:</strong>
+                        <span style={{ fontFamily: "ui-monospace, monospace", letterSpacing: trackMeta.sequenceSeparator === "" ? "0.05em" : "normal" }}>
+                          {activeItem.choices.map(choiceLabel).every(Boolean)
+                            ? activeItem.choices.map(choiceLabel).join(trackMeta.sequenceSeparator ?? " ")
+                            : <em style={{ color: "#64748b" }}>Fill all 4 blocks above — they will form the correct answer in this order</em>}
+                        </span>
+                      </div>
+                    )}
                   </div>
                   <label className="span-2">{trackMeta.explanationLabel}<textarea rows={3} value={activeItem.explanation} onChange={(event) => updateItem(activeItemIndex, "explanation", event.target.value)} placeholder={trackMeta.explanationPlaceholder} /></label>
                 </div>
@@ -447,7 +759,13 @@ export default function TeacherCameraStudio() {
 
           <section id="teacher-camera-review-publish" className={`teacher-camera-review ${validation.valid ? "is-ready" : ""}`}>
             <div className="teacher-camera-review__head"><span><ShieldCheck size={22} /></span><div><small>STEP 5</small><h3>Review and publish</h3><p>Nothing reaches students until you press Publish. You can also set an optional expiration and delete existing levels.</p></div><b>{validation.valid ? "Ready to publish" : `${completedItems}/10 activities ready`}</b></div>
-            {!validation.valid && <div className="teacher-camera-validation"><Target size={18} /><div><strong>{validation.errors.length} publishing check{validation.errors.length === 1 ? "" : "s"} remaining</strong><span>{validation.errors.slice(0, 3).join(" ")}</span></div></div>}
+            {!validation.valid && <div className="teacher-camera-validation"><Target size={18} /><div><strong>{validation.errors.length} publishing check{validation.errors.length === 1 ? "" : "s"} remaining</strong><span>{validation.errors.slice(0, 5).join(" ")}</span></div></div>}
+            {validation.valid && validation.warnings?.length > 0 && (
+              <div className="teacher-camera-validation" style={{ background: "#fffbeb", borderColor: "#fcd34d" }}>
+                <Target size={18} />
+                <div><strong>Optional tip</strong><span>{validation.warnings[0]}</span></div>
+              </div>
+            )}
             <div className="teacher-camera-review__summary">
               <div><span>Destination</span><strong>{form.grade} · {form.section}</strong></div>
               <div><span>Activity</span><strong>{CAMERA_TRACKS[form.track].label}</strong></div>

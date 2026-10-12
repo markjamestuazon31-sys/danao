@@ -1,381 +1,267 @@
+/**
+ * Classroom / Teacher Game Zone session helpers.
+ * Ensures each published camera track (truefalse, math, sort, …) is exposed as
+ * its own activity so the exact game the teacher published is the one that plays.
+ */
 import { get, push, ref, set, update } from "firebase/database";
-import { auth, database } from "../firebase/firebaseConfig";
-import { classFields, teacherCanAccessClass } from "../data/schoolClasses";
-import { getTeacherGames, getTeacherQuizzes } from "./dataService";
-import { CAMERA_TRACKS, cameraProgramQuestions, getTeacherCameraPrograms } from "./cameraContentService";
+import { database } from "../firebase/firebaseConfig";
+import {
+  CAMERA_TRACKS,
+  cameraProgramQuestions,
+  getPublishedCameraProgramsForStudent,
+  isCameraProgramActive,
+} from "./cameraContentService";
+import { classFields } from "../data/schoolClasses";
 
-function clean(value) {
-  return JSON.parse(JSON.stringify(value));
+function text(value, limit = 200) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, limit);
 }
 
-function text(value, maximum = 240) {
-  return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, maximum);
-}
-
-function safeKey(value, fallback) {
-  return text(value, 100).replace(/[.#$\[\]/]/g, "_") || fallback;
-}
-
-function shuffleItems(items) {
-  return [...items].sort(() => Math.random() - 0.5);
-}
-
-function selectGameQuestions(game, questions) {
-  const pool = game?.randomizeQuestions === false ? questions : shuffleItems(questions);
-  const limit = Number(game?.questionLimit || pool.length);
-  return pool.slice(0, Math.max(1, limit));
-}
-
-function values(value) {
-  if (Array.isArray(value)) return value;
-  if (value && typeof value === "object") return Object.values(value);
-  return [];
-}
-
-function number(value, fallback = 0) {
-  const result = Number(value);
-  return Number.isFinite(result) ? result : fallback;
-}
-
-async function activeTeacher(teacherId) {
-  const currentUser = auth.currentUser;
-  if (!currentUser || currentUser.uid !== teacherId) {
-    throw new Error("Sign in again before opening a classroom session.");
+function classKeyFromTarget(targetClass) {
+  if (!targetClass) return "";
+  if (targetClass.classKey) return text(targetClass.classKey, 80);
+  try {
+    return classFields(targetClass.grade, targetClass.section).classKey;
+  } catch {
+    return "";
   }
-  const snapshot = await get(ref(database, `users/${teacherId}`));
-  const teacher = snapshot.exists() ? snapshot.val() : null;
-  if (!teacher || teacher.role !== "teacher" || teacher.status !== "active") {
-    throw new Error("An active teacher account is required.");
+}
+
+/**
+ * Build the list of published activities for a class.
+ * Camera programs are typed as `camera-{track}` with `cameraTrack` set so
+ * Teacher Game Zone and the student player always open the correct game.
+ */
+export async function getClassroomActivities({ teacherId, teacherProfile, targetClass } = {}) {
+  const classKey = classKeyFromTarget(targetClass);
+  if (!classKey) return [];
+
+  const activities = [];
+
+  // ---- Camera programs (True or False, Math, Reading, Sort, …) ----
+  try {
+    const snapshot = await get(ref(database, `cameraPublished/${classKey}`));
+    if (snapshot.exists()) {
+      const now = Date.now();
+      Object.entries(snapshot.val()).forEach(([track, levels]) => {
+        if (!CAMERA_TRACKS[track]) return;
+        const meta = CAMERA_TRACKS[track];
+        Object.entries(levels || {}).forEach(([levelKey, record]) => {
+          if (!record || record.status !== "published") return;
+          if (!isCameraProgramActive(record, now)) return;
+          // Optional teacher ownership filter (schoolwide teachers see all)
+          if (teacherId && record.teacherId && record.teacherId !== teacherId && teacherProfile?.teachingScope !== "schoolwide") {
+            return;
+          }
+          const level = Number(levelKey.replace(/\D/g, "")) || Number(record.level) || 1;
+          const questions = cameraProgramQuestions({
+            ...record,
+            classKey,
+            track,
+            level,
+          });
+          if (!questions.length) return;
+          activities.push({
+            key: `camera-${track}-level-${level}`,
+            type: `camera-${track}`,
+            cameraTrack: track,
+            cameraKind: meta.kind,
+            label: meta.label,
+            subject: meta.subject || record.subject || "General",
+            title: text(record.title, 120) || `${meta.label} · Level ${level}`,
+            level,
+            questions,
+            grade: record.grade || targetClass?.grade,
+            section: record.section || targetClass?.section,
+            classKey,
+            teacherId: record.teacherId || teacherId || "",
+            teacherName: record.teacherName || "",
+            publishedAt: record.publishedAt || record.updatedAt || 0,
+          });
+        });
+      });
+    }
+  } catch (error) {
+    console.warn("getClassroomActivities: camera programs failed", error);
   }
-  return teacher;
-}
 
-function normalizeChoiceQuestion(question, index, prefix) {
-  const choices = values(question?.choices || question?.options)
-    .map((choice) => text(choice, 300))
-    .filter(Boolean)
-    .slice(0, 12);
-  const answerIndex = Number.isInteger(Number(question?.answerIndex))
-    ? Math.max(0, Math.min(choices.length - 1, Number(question.answerIndex)))
-    : Math.max(0, choices.findIndex((choice) => choice === text(question?.answer, 300)));
-  const correctAnswer = text(question?.answer, 300) || choices[answerIndex] || "";
-  return {
-    id: safeKey(question?.id, `${prefix}-${index + 1}`),
-    type: "choice",
-    prompt: text(question?.prompt || question?.question, 700),
-    description: text(question?.description, 500),
-    choices,
-    answerIndex,
-    correctAnswer,
-    explanation: text(question?.explanation || question?.coachingTip, 700),
-    points: Math.max(0, number(question?.points, 1)),
-  };
-}
-
-function normalizeGameQuestions(game) {
-  return values(game?.questions)
-    .map((question, index) => normalizeChoiceQuestion(question, index, `game-${game.id || "item"}`))
-    .filter((question) => question.prompt && question.choices.length >= 2 && question.correctAnswer);
-}
-
-function normalizeQuizQuestions(quiz) {
-  return values(quiz?.questions).map((question, index) => {
-    const id = safeKey(question?.id, `quiz-${quiz.id || "item"}-${index + 1}`);
-    const base = {
-      id,
-      prompt: text(question?.prompt, 700),
-      description: text(question?.description, 500),
-      explanation: "",
-      points: Math.max(0, number(question?.points, 1)),
-    };
-    if (question?.type === "checkboxes") {
-      return {
-        ...base,
-        type: "multiple",
-        choices: values(question.options).map((choice) => text(choice, 300)).filter(Boolean),
-        correctIndices: values(question.correctAnswers).map(Number).filter(Number.isInteger),
-      };
+  // ---- Published quizzes (if present) ----
+  try {
+    const quizSnap = await get(ref(database, `publishedQuizzes/${classKey}`));
+    if (quizSnap.exists()) {
+      Object.entries(quizSnap.val()).forEach(([quizId, quiz]) => {
+        if (!quiz || quiz.status !== "published") return;
+        const questions = Array.isArray(quiz.questions) ? quiz.questions : [];
+        if (!questions.length) return;
+        activities.push({
+          key: `quiz-${quizId}`,
+          type: "quiz",
+          label: "Quiz",
+          subject: quiz.subject || "Assessment",
+          title: text(quiz.title, 120) || "Class Quiz",
+          questions: questions.map((q, index) => ({
+            id: q.id || `q-${index + 1}`,
+            type: q.type || (Array.isArray(q.choices) && q.choices.length ? "choice" : "text"),
+            prompt: q.prompt || q.question || "",
+            answer: q.answer || q.correctAnswer || "",
+            choices: q.choices || [],
+            explanation: q.explanation || "",
+          })),
+          grade: quiz.grade || targetClass?.grade,
+          section: quiz.section || targetClass?.section,
+          classKey,
+          teacherId: quiz.teacherId || teacherId || "",
+          publishedAt: quiz.publishedAt || 0,
+        });
+      });
     }
-    if (question?.type === "short-answer") {
-      return {
-        ...base,
-        type: "text",
-        acceptedAnswers: values(question.acceptedAnswers).map((answer) => text(answer, 300)).filter(Boolean),
-        caseSensitive: Boolean(question.caseSensitive),
-      };
-    }
-    if (question?.type === "paragraph") {
-      return { ...base, type: "manual", readingText: "", manualLabel: "Teacher review" };
-    }
-    return normalizeChoiceQuestion(question, index, `quiz-${quiz.id || "item"}`);
-  }).filter((question) => question.prompt);
-}
-
-function normalizeCameraQuestions(program) {
-  const meta = CAMERA_TRACKS[program.track] || CAMERA_TRACKS.math;
-  return cameraProgramQuestions(program).map((question, index) => {
-    const cameraFields = {
-      cameraTrack: meta.id,
-      cameraKind: meta.kind,
-      sequenceSeparator: meta.sequenceSeparator,
-    };
-    if (meta.kind === "reading") {
-      return {
-        ...cameraFields,
-        id: safeKey(question.id, `camera-reading-${index + 1}`),
-        type: "manual",
-        prompt: question.prompt || "Read this aloud",
-        readingText: text(question.readingText, 700),
-        correctAnswer: text(question.answer, 700),
-        explanation: text(question.explanation, 700),
-        points: 1,
-        manualLabel: "Reading check",
-        passAccuracy: number(question.passAccuracy, 70),
-      };
-    }
-    if (meta.kind === "sequence") {
-      return {
-        ...cameraFields,
-        id: safeKey(question.id, `camera-${meta.id}-${index + 1}`),
-        type: "text",
-        prompt: text(question.prompt, 700),
-        choices: values(question.choices).map((choice) => text(choice, 100)).filter(Boolean),
-        acceptedAnswers: [text(question.answer, 300)],
-        correctAnswer: text(question.answer, 300),
-        explanation: text(question.explanation, 700),
-        points: 1,
-      };
-    }
-    return {
-      ...normalizeChoiceQuestion(question, index, `camera-${meta.id}-${program.level}`),
-      ...cameraFields,
-    };
-  });
-}
-
-function activityMatchesClass(activity, targetClass) {
-  return activity?.classKey === targetClass.key
-    || (activity?.grade === targetClass.grade && activity?.section === "All Sections");
-}
-
-export async function getClassroomActivities({ teacherId, teacherProfile, targetClass }) {
-  if (!targetClass?.key) return [];
-  const teacher = await activeTeacher(teacherId);
-  if (!teacherCanAccessClass(teacher, targetClass.grade, targetClass.section)) {
-    throw new Error("This Grade and Section is outside your assigned teaching scope.");
+  } catch (error) {
+    console.warn("getClassroomActivities: quizzes failed", error);
   }
-  const [games, quizzes, cameraPrograms] = await Promise.all([
-    getTeacherGames(teacherId),
-    getTeacherQuizzes(teacherId),
-    getTeacherCameraPrograms(teacherProfile || teacher),
-  ]);
 
-  const gameActivities = games
-    .filter((game) => game.status === "published" && activityMatchesClass(game, targetClass))
-    .map((game) => ({
-      id: game.id,
-      key: `game-${game.id}`,
-      type: "game",
-      label: "Learning game",
-      title: game.title || "Untitled game",
-      subject: game.subject || "General",
-      grade: game.grade,
-      section: game.section,
-      classKey: game.classKey,
-      questions: selectGameQuestions(game, normalizeGameQuestions(game)),
-      updatedAt: number(game.updatedAt || game.publishedAt),
-    }));
-
-  const quizActivities = quizzes
-    .filter((quiz) => quiz.status === "published" && activityMatchesClass(quiz, targetClass))
-    .map((quiz) => ({
-      id: quiz.id,
-      key: `quiz-${quiz.id}`,
-      type: "quiz",
-      label: "Published quiz",
-      title: quiz.title || "Untitled quiz",
-      subject: quiz.subject || "General",
-      grade: quiz.grade,
-      section: quiz.section,
-      classKey: quiz.classKey,
-      questions: quiz.randomizeQuestions === false ? normalizeQuizQuestions(quiz) : shuffleItems(normalizeQuizQuestions(quiz)).slice(0, Number(quiz.questionLimit || normalizeQuizQuestions(quiz).length)),
-      updatedAt: number(quiz.updatedAt || quiz.publishedAt),
-    }));
-
-  const cameraActivities = cameraPrograms
-    .filter((program) => program.status === "published" && program.teacherId === teacherId && program.classKey === targetClass.key)
-    .map((program) => {
-      const meta = CAMERA_TRACKS[program.track] || CAMERA_TRACKS.math;
-      return {
-      id: `${program.track}-level-${program.level}`,
-      key: `camera-${program.classKey}-${program.track}-${program.level}`,
-      type: `camera-${meta.id}`,
-      cameraTrack: meta.id,
-      cameraKind: meta.kind,
-      label: meta.label,
-      title: program.title || `${meta.label} · Level ${program.level}`,
-      subject: program.subject || meta.subject,
-      grade: program.grade,
-      section: program.section,
-      classKey: program.classKey,
-      questions: normalizeCameraQuestions(program),
-      updatedAt: number(program.updatedAt || program.publishedAt),
-      };
-    });
-
-  return [...gameActivities, ...quizActivities, ...cameraActivities]
-    .filter((activity) => activity.questions.length > 0)
-    .sort((left, right) => right.updatedAt - left.updatedAt || left.title.localeCompare(right.title));
-}
-
-export async function createSharedDeviceLearner({ teacherId, targetClass, name, learnerNumber = "" }) {
-  const teacher = await activeTeacher(teacherId);
-  if (!targetClass?.grade || !targetClass?.section || !teacherCanAccessClass(teacher, targetClass.grade, targetClass.section)) {
-    throw new Error("Select one of your assigned Grade and Section classes.");
-  }
-  const learnerName = text(name, 120);
-  if (learnerName.length < 2) throw new Error("Enter the learner’s complete name.");
-  const target = classFields(targetClass.grade, targetClass.section);
-  const existingSnapshot = await get(ref(database, `classLearners/${target.classKey}`));
-  const duplicate = existingSnapshot.exists() && Object.values(existingSnapshot.val()).some((learner) => (
-    learner?.status !== "archived" && text(learner?.name, 120).toLowerCase() === learnerName.toLowerCase()
-  ));
-  if (duplicate) throw new Error(`${learnerName} is already listed in this section.`);
-
-  const learnerRef = push(ref(database, `classLearners/${target.classKey}`));
-  if (!learnerRef.key) throw new Error("A learner record ID could not be created.");
-  const now = Date.now();
-  const record = clean({
-    id: learnerRef.key,
-    uid: learnerRef.key,
-    name: learnerName,
-    learnerNumber: text(learnerNumber, 40),
-    ...target,
-    source: "shared-device",
-    status: "active",
-    createdBy: teacherId,
-    createdByName: text(teacher.name || teacher.email || "Teacher", 120),
-    createdAt: now,
-    updatedAt: now,
-  });
-  await set(learnerRef, record);
-  return record;
+  // Newest first
+  return activities.sort((a, b) => (b.publishedAt || 0) - (a.publishedAt || 0));
 }
 
 export function evaluateClassroomAnswer(question, answer) {
-  if (!question) return { correct: false, answerText: "", correctAnswer: "" };
-  if (question.type === "manual") {
-    const correct = answer === "teacher-correct";
-    return {
-      correct,
-      answerText: correct ? "Teacher marked correct" : "Teacher marked needs practice",
-      correctAnswer: question.correctAnswer || "Teacher observation",
-    };
+  if (!question) return { correct: false, correctAnswer: "" };
+  const correctAnswer = question.answer ?? question.correctAnswer ?? "";
+  const normalizedCorrect = String(correctAnswer).trim().toLowerCase();
+
+  if (answer === "teacher-correct") return { correct: true, correctAnswer };
+  if (answer === "teacher-wrong") return { correct: false, correctAnswer };
+
+  // Choice by index
+  if (typeof answer === "number" && Array.isArray(question.choices)) {
+    const chosen = question.choices[answer];
+    const correct = String(chosen || "").trim().toLowerCase() === normalizedCorrect;
+    return { correct, correctAnswer, chosen };
   }
-  if (question.type === "multiple") {
-    const actual = values(answer).map(Number).filter(Number.isInteger).sort((a, b) => a - b);
-    const expected = values(question.correctIndices).map(Number).filter(Number.isInteger).sort((a, b) => a - b);
-    const correct = actual.length === expected.length && actual.every((value, index) => value === expected[index]);
-    return {
-      correct,
-      answerText: actual.map((index) => question.choices?.[index]).filter(Boolean).join(", "),
-      correctAnswer: expected.map((index) => question.choices?.[index]).filter(Boolean).join(", "),
-    };
+
+  // Choice by text / true-false
+  if (typeof answer === "string") {
+    const correct = answer.trim().toLowerCase() === normalizedCorrect
+      || (Array.isArray(question.acceptedAnswers)
+        && question.acceptedAnswers.some((a) => String(a).trim().toLowerCase() === answer.trim().toLowerCase()));
+    return { correct, correctAnswer };
   }
-  if (question.type === "text") {
-    const raw = text(answer, 700);
-    const normalized = question.caseSensitive ? raw : raw.toLowerCase();
-    const accepted = values(question.acceptedAnswers).map((value) => question.caseSensitive ? text(value, 700) : text(value, 700).toLowerCase());
-    return { correct: accepted.includes(normalized), answerText: raw, correctAnswer: values(question.acceptedAnswers).join(" / ") };
+
+  // Multiple select
+  if (Array.isArray(answer) && Array.isArray(question.choices)) {
+    const chosenTexts = answer.map((i) => String(question.choices[i] || "").trim().toLowerCase()).sort();
+    const expected = String(correctAnswer).split(/[,|]/).map((s) => s.trim().toLowerCase()).filter(Boolean).sort();
+    const correct = chosenTexts.length === expected.length && chosenTexts.every((v, i) => v === expected[i]);
+    return { correct, correctAnswer };
   }
-  const selectedIndex = Number(answer);
-  const answerText = question.choices?.[selectedIndex] || text(answer, 300);
-  return {
-    correct: answerText === question.correctAnswer || selectedIndex === Number(question.answerIndex),
-    answerText,
-    correctAnswer: question.correctAnswer || question.choices?.[question.answerIndex] || "",
-  };
+
+  return { correct: false, correctAnswer };
 }
 
 export async function startClassroomSession({ teacherId, learner, activity }) {
-  const teacher = await activeTeacher(teacherId);
-  if (!learner?.uid || !activity?.id || !activity?.questions?.length) {
-    throw new Error("Choose a learner and a playable activity.");
-  }
-  if (!teacherCanAccessClass(teacher, learner.gradeLevel, learner.section)) {
-    throw new Error("This learner is outside your assigned teaching scope.");
-  }
-  const sessionRef = push(ref(database, `classroomSessions/${teacherId}/${learner.classKey}/${learner.uid}`));
-  if (!sessionRef.key) throw new Error("A classroom session ID could not be created.");
-  const now = Date.now();
-  const record = clean({
+  if (!teacherId || !learner || !activity) throw new Error("Teacher, learner, and activity are required to start a session.");
+  const sessionRef = push(ref(database, `classroomSessions/${teacherId}`));
+  const session = {
     id: sessionRef.key,
     teacherId,
-    teacherName: text(teacher.name || teacher.email || "Teacher", 120),
-    learnerId: learner.uid,
-    learnerName: text(learner.name, 120),
-    learnerSource: learner.source === "shared-device" ? "shared-device" : "account",
-    grade: learner.gradeLevel,
-    section: learner.section,
-    classKey: learner.classKey,
-    contentId: activity.id,
-    contentType: activity.type,
-    contentTitle: text(activity.title, 160),
-    subject: text(activity.subject || "General", 80),
-    status: "in-progress",
-    totalItems: activity.questions.length,
-    answeredItems: 0,
-    correctCount: 0,
-    wrongCount: 0,
-    accuracyPercent: 0,
-    responses: {},
-    startedAt: now,
-    updatedAt: now,
-  });
-  await set(sessionRef, record);
-  return record;
+    learnerId: learner.id || learner.uid || "",
+    learnerName: text(learner.name || learner.displayName, 100),
+    activityKey: activity.key,
+    activityType: activity.type,
+    cameraTrack: activity.cameraTrack || null,
+    contentTitle: activity.title,
+    grade: activity.grade || learner.grade || "",
+    section: activity.section || learner.section || "",
+    classKey: activity.classKey || "",
+    totalQuestions: activity.questions?.length || 0,
+    responses: [],
+    startedAt: Date.now(),
+    status: "active",
+  };
+  await set(sessionRef, session);
+  return session;
 }
 
 export async function saveClassroomProgress(session, responses) {
-  if (!session?.id || !session?.classKey || !session?.learnerId) throw new Error("The classroom session is not available.");
-  if (!auth.currentUser || auth.currentUser.uid !== session.teacherId) throw new Error("Sign in again before saving this classroom session.");
-  const responseValues = Object.values(responses || {});
-  const correctCount = responseValues.filter((response) => response.correct === true).length;
-  const wrongCount = responseValues.filter((response) => response.correct === false).length;
-  const answeredItems = responseValues.length;
-  const accuracyPercent = answeredItems ? Math.round((correctCount / answeredItems) * 100) : 0;
-  const updatedAt = Date.now();
-  await update(ref(database, `classroomSessions/${session.teacherId}/${session.classKey}/${session.learnerId}/${session.id}`), clean({
-    responses,
-    answeredItems,
-    correctCount,
-    wrongCount,
-    accuracyPercent,
-    updatedAt,
-  }));
-  return { answeredItems, correctCount, wrongCount, accuracyPercent, updatedAt };
+  if (!session?.id || !session?.teacherId) return;
+  await update(ref(database, `classroomSessions/${session.teacherId}/${session.id}`), {
+    responses: responses || [],
+    updatedAt: Date.now(),
+  });
 }
 
 export async function completeClassroomSession(session, responses) {
-  const summary = await saveClassroomProgress(session, responses);
-  const completedAt = Date.now();
-  await update(ref(database, `classroomSessions/${session.teacherId}/${session.classKey}/${session.learnerId}/${session.id}`), {
+  if (!session?.id || !session?.teacherId) throw new Error("Session is missing.");
+  const list = Array.isArray(responses) ? responses : [];
+  const correctCount = list.filter((r) => r.correct).length;
+  const total = list.length || session.totalQuestions || 1;
+  const accuracyPercent = Math.round((correctCount / total) * 100);
+  const summary = {
+    ...session,
+    responses: list,
+    correctCount,
+    totalQuestions: total,
+    accuracyPercent,
+    completedAt: Date.now(),
     status: "completed",
-    completedAt,
-    updatedAt: completedAt,
+  };
+  await update(ref(database, `classroomSessions/${session.teacherId}/${session.id}`), {
+    responses: list,
+    correctCount,
+    totalQuestions: total,
+    accuracyPercent,
+    completedAt: summary.completedAt,
+    status: "completed",
   });
-  return { ...summary, completedAt, status: "completed" };
+  // Mirror a compact record for the Game Zone history grid
+  const recordRef = push(ref(database, `classroomSessionRecords/${session.teacherId}`));
+  await set(recordRef, {
+    id: recordRef.key,
+    sessionId: session.id,
+    teacherId: session.teacherId,
+    learnerId: session.learnerId,
+    learnerName: session.learnerName,
+    contentTitle: session.contentTitle,
+    activityType: session.activityType,
+    cameraTrack: session.cameraTrack || null,
+    grade: session.grade,
+    section: session.section,
+    accuracyPercent,
+    correctCount,
+    totalQuestions: total,
+    startedAt: session.startedAt,
+    completedAt: summary.completedAt,
+  });
+  return summary;
 }
 
-export async function getClassroomSessionRecords({ teacherId, targetClass }) {
-  if (!targetClass?.key) return [];
-  const teacher = await activeTeacher(teacherId);
-  if (!teacherCanAccessClass(teacher, targetClass.grade, targetClass.section)) {
-    throw new Error("This Grade and Section is outside your assigned teaching scope.");
-  }
-  const snapshot = await get(ref(database, `classroomSessions/${teacherId}/${targetClass.key}`));
+export async function getClassroomSessionRecords({ teacherId, targetClass } = {}) {
+  if (!teacherId) return [];
+  const snapshot = await get(ref(database, `classroomSessionRecords/${teacherId}`));
   if (!snapshot.exists()) return [];
-  return Object.values(snapshot.val()).flatMap((learnerSessions) => values(learnerSessions))
-    .filter((session) => session?.teacherId === teacherId)
-    .sort((left, right) => number(right.completedAt || right.startedAt) - number(left.completedAt || left.startedAt));
+  const classKey = classKeyFromTarget(targetClass);
+  return Object.values(snapshot.val())
+    .filter((record) => {
+      if (!classKey) return true;
+      if (record.classKey) return record.classKey === classKey;
+      // Fallback match on grade/section labels
+      if (targetClass?.grade && record.grade && !String(record.grade).includes(String(targetClass.grade).replace(/^Grade\s*/i, ""))) return false;
+      if (targetClass?.section && record.section && !String(record.section).includes(String(targetClass.section).replace(/^Section\s*/i, ""))) return false;
+      return true;
+    })
+    .sort((a, b) => (b.completedAt || b.startedAt || 0) - (a.completedAt || a.startedAt || 0));
+}
+
+export async function createSharedDeviceLearner({ teacherId, name, grade, section }) {
+  if (!teacherId || !name) throw new Error("Teacher and learner name are required.");
+  const learnerRef = push(ref(database, `sharedDeviceLearners/${teacherId}`));
+  const learner = {
+    id: learnerRef.key,
+    name: text(name, 80),
+    grade: text(grade, 40),
+    section: text(section, 40),
+    type: "shared-device",
+    createdAt: Date.now(),
+  };
+  await set(learnerRef, learner);
+  return learner;
 }

@@ -9,6 +9,9 @@ import { getDatabase } from "firebase/database";
  * Authentication and Realtime Database Rules. This project intentionally uses
  * Realtime Database as its only application data store. Environment variables
  * can override project values for deployments without changing source code.
+ *
+ * Classroom pictures for Picture & Symbol Match are stored as compressed
+ * base64 data URLs on camera program records in RTDB (no Firebase Storage).
  */
 export const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDND3Ee3El1bTH5sXxc1h-hvxBNQd_588Q",

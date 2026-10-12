@@ -102,6 +102,11 @@ export default function App() {
               <Route path="/student/camera-math" element={protect(["student"], <CameraMathGame initialActivity="math" />)} />
               <Route path="/student/camera-reading" element={protect(["student"], <CameraMathGame initialActivity="english" />)} />
               <Route path="/student/camera-reading-english" element={protect(["student"], <CameraMathGame initialActivity="english" />)} />
+              <Route path="/student/camera-sort" element={protect(["student"], <CameraMathGame initialActivity="sort" />)} />
+              <Route path="/student/camera-sentence" element={protect(["student"], <CameraMathGame initialActivity="sentence" />)} />
+              <Route path="/student/camera-spelling" element={protect(["student"], <CameraMathGame initialActivity="spelling" />)} />
+              <Route path="/student/camera-picture" element={protect(["student"], <CameraMathGame initialActivity="picture" />)} />
+              <Route path="/student/camera-truefalse" element={protect(["student"], <CameraMathGame initialActivity="truefalse" />)} />
               <Route path="/student/camera-certificate/:track" element={protect(["student"], <CameraLearningCertificate />)} />
               <Route path="/student/search" element={protect(["student"], <StudentSearch />)} />
 

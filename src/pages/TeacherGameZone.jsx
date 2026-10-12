@@ -140,7 +140,19 @@ export default function TeacherGameZone() {
     () => activities.find((activity) => activity.key === selectedActivityKey) || null,
     [activities, selectedActivityKey],
   );
-  const selectedCameraMeta = CAMERA_TRACKS[selectedActivity?.cameraTrack] || null;
+  // Resolve the camera track from the published activity so the exact game the teacher
+  // published (truefalse, math, sort, …) is the one that plays — never a default/fallback.
+  const resolvedCameraTrack = (() => {
+    const fromField = selectedActivity?.cameraTrack;
+    if (fromField && CAMERA_TRACKS[fromField]) return fromField;
+    const type = String(selectedActivity?.type || "");
+    if (type.startsWith("camera-")) {
+      const fromType = type.slice("camera-".length);
+      if (CAMERA_TRACKS[fromType]) return fromType;
+    }
+    return null;
+  })();
+  const selectedCameraMeta = resolvedCameraTrack ? CAMERA_TRACKS[resolvedCameraTrack] : null;
   const categoryMeta = CATEGORIES.find((item) => item.id === category) || CATEGORIES[0];
   const categoryActivities = useMemo(
     () => activities.filter(categoryMeta.matches),

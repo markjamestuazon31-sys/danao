@@ -60,6 +60,7 @@ function answerLengthClass(choice) {
 
 export default function CameraMathStage({
   choices,
+  choiceImages = [],
   questionKey,
   onDrop,
   disabled = false,
@@ -82,7 +83,8 @@ export default function CameraMathStage({
     start,
     stop,
   } = useHandTracking();
-  const visibleChoices = useMemo(() => choices.slice(0, 4), [choices]);
+  const visibleChoices = useMemo(() => (choices || []).slice(0, 4), [choices]);
+  const visibleImages = useMemo(() => (choiceImages || []).slice(0, 4), [choiceImages]);
   const visiblePositions = useMemo(() => positionsForCount(visibleChoices.length), [visibleChoices.length]);
   const [hoveredIndex, setHoveredIndex] = useState(-1);
   const [grabbedIndex, setGrabbedIndex] = useState(-1);
@@ -244,11 +246,12 @@ export default function CameraMathStage({
             const dragging = grabbedIndex === index;
             const left = dragging && cursor ? cursor.x : position.x;
             const top = dragging && cursor ? cursor.y : position.y;
+            const imageUrl = visibleImages[index];
             return (
               <button
                 type="button"
                 key={`${choice}-${index}`}
-                className={`camera-floating-answer tone-${index + 1} ${answerLengthClass(choice)} ${hoveredIndex === index ? "is-hovered" : ""} ${dragging ? "is-grabbed" : ""}`}
+                className={`camera-floating-answer tone-${index + 1} ${answerLengthClass(choice)} ${imageUrl ? "has-picture" : ""} ${hoveredIndex === index ? "is-hovered" : ""} ${dragging ? "is-grabbed" : ""}`}
                 style={{ left: `${left * 100}%`, top: `${top * 100}%` }}
                 onClick={() => selectByTap(index)}
                 disabled={disabled || submitted}
@@ -256,7 +259,10 @@ export default function CameraMathStage({
                 aria-label={`Answer ${String.fromCharCode(65 + index)}: ${choice}. Pinch to drag or tap to select.`}
                 title={`Answer ${String.fromCharCode(65 + index)}: ${choice}`}
               >
-                <small>{String.fromCharCode(65 + index)}</small><strong>{choice}</strong><Grab size={16} />
+                <small>{String.fromCharCode(65 + index)}</small>
+                {imageUrl ? <img className="camera-floating-answer__image" src={imageUrl} alt="" draggable={false} /> : null}
+                <strong>{choice}</strong>
+                <Grab size={16} />
               </button>
             );
           })}

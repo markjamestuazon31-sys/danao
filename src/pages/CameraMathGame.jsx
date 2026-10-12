@@ -41,6 +41,7 @@ import {
   getPublishedCameraProgramsForStudent,
 } from "../services/cameraContentService";
 import { calculateStars, getLearningWeek } from "../utils/gameEngine";
+import "../styles/camera-picture-upload.css";
 
 const ITEMS_PER_LEVEL = 10;
 const TOTAL_LEVELS = 10;
@@ -57,9 +58,11 @@ const TRACK_ICONS = {
 };
 
 function normalizeActivity(value) {
-  const key = String(value || "").toLowerCase().trim();
+  const raw = String(value || "").toLowerCase().trim();
+  const key = raw.replace(/^camera-/, "");
   if (CAMERA_TRACKS[key]) return key;
-  if (key === "reading" || key === "camera-reading") return "english";
+  if (key === "reading" || key === "reading-english") return "english";
+  // Only default to math when nothing was provided. Never map truefalse/sort/etc. away.
   return "math";
 }
 
@@ -124,8 +127,6 @@ export default function CameraMathGame({ initialActivity = "math" }) {
   const grade = normalizeGradeLevel(profile?.gradeLevel) || "Grade 3";
   const experience = getGradeExperience(grade);
   const normalizedInitialActivity = normalizeActivity(initialActivity);
-  // Dedicated routes (/student/camera-truefalse etc.) open that game only — no multi-game chooser
-  const focusedMode = Boolean(initialActivity && initialActivity !== "all");
   const [activity, setActivity] = useState(normalizedInitialActivity);
   const [phase, setPhase] = useState("intro");
   const [mode, setMode] = useState(() => {
@@ -178,20 +179,15 @@ export default function CameraMathGame({ initialActivity = "math" }) {
   );
   const question = questions[questionIndex];
 
-  // Only show tracks the teacher has actually published for this student/class
+  // Student opened a specific game route (e.g. /student/camera-truefalse).
+  // Show and play ONLY that game — never a multi-activity chooser and never
+  // auto-switch to another published track. Other games stay on their own routes.
   const availableTracks = useMemo(() => {
-    const trackIds = new Set(
-      teacherPrograms
-        .filter((program) => {
-          if (!program?.track || !CAMERA_TRACKS[program.track]) return false;
-          // Math can be week-scoped; other tracks always count
-          if (program.track === "math" && program.weekKey && program.weekKey !== learningWeek.key) return false;
-          return true;
-        })
-        .map((program) => program.track)
-    );
-    return Object.values(CAMERA_TRACKS).filter((track) => trackIds.has(track.id));
-  }, [teacherPrograms, learningWeek.key]);
+    if (normalizedInitialActivity && CAMERA_TRACKS[normalizedInitialActivity]) {
+      return [CAMERA_TRACKS[normalizedInitialActivity]];
+    }
+    return [];
+  }, [normalizedInitialActivity]);
 
   useEffect(() => {
     if (!user?.uid) return undefined;
@@ -227,18 +223,15 @@ export default function CameraMathGame({ initialActivity = "math" }) {
     setLevel(1);
     setPhase("intro");
   }, [normalizedInitialActivity]);
-  // Auto-select only when NOT in focused mode (hub view). Focused routes stay on their track.
+  // Lock activity to the route for the whole session. Never auto-switch to another
+  // published track when the teacher has not published this one yet.
   useEffect(() => {
-    if (focusedMode || programsLoading || !availableTracks.length) return;
-    const currentStillValid = availableTracks.some((t) => t.id === activity);
-    if (currentStillValid) return;
-    const next = availableTracks[0];
-    const d = activityDetails(next.id);
-    setActivity(next.id);
-    setMode(d.reading ? "camera-reading" : d.sequence ? "camera-sequence" : "camera-drag");
-    setLevel(1);
-    setFeedback(null);
-  }, [focusedMode, programsLoading, availableTracks, activity]);
+    if (activity !== normalizedInitialActivity) {
+      setActivity(normalizedInitialActivity);
+      const d = activityDetails(normalizedInitialActivity);
+      setMode(d.reading ? "camera-reading" : d.sequence ? "camera-sequence" : "camera-drag");
+    }
+  }, [activity, normalizedInitialActivity]);
 
 
   const finishGame = useCallback(async (finalScore, finalCorrect) => {
@@ -375,21 +368,10 @@ export default function CameraMathGame({ initialActivity = "math" }) {
     moveToNextStage(score, correctCount, 1100);
   }, [correctCount, moveToNextStage, phase, score]);
 
-  function chooseActivity(nextActivity) {
-    const normalized = normalizeActivity(nextActivity);
-    const d = activityDetails(normalized);
-    const nextGame = systemCatalogForGrade(grade).find((item) => item.certificateTrack === normalized);
-    const unlocked = Math.max(1, Math.min(TOTAL_LEVELS, Number(progress.game?.[nextGame?.id]?.maxUnlockedLevel || 1)));
-    setActivity(normalized);
-    setMode(d.reading ? "camera-reading" : d.sequence ? "camera-sequence" : "camera-drag");
-    const availableLevels = teacherPrograms
-      .filter((program) => program.track === normalized && (normalized !== "math" || !program.weekKey || program.weekKey === learningWeek.key))
-      .map((program) => Number(program.level))
-      .filter((programLevel) => programLevel <= unlocked)
-      .sort((left, right) => right - left);
-    setLevel(availableLevels[0] || 1);
-    setFeedback(null);
-    playSound("button");
+  // Intentionally disabled: the student must play only the game they opened
+  // (route initialActivity). Switching tracks here caused the wrong game to play.
+  function chooseActivity() {
+    // no-op — keep activity locked to normalizedInitialActivity
   }
 
   function startGame(requestedLevel = level) {
@@ -475,54 +457,40 @@ export default function CameraMathGame({ initialActivity = "math" }) {
           </div>
 
           <div className="camera-math-intro__setup">
-            {!focusedMode && (
-              <>
-                <div>
-                  <span className="camera-learning-section-label">CAMERA GAMES FROM YOUR TEACHER</span>
-                  <h2>
-                    {programsLoading
-                      ? "Loading your teacher’s activities…"
-                      : availableTracks.length === 0
-                        ? "No camera activities published yet"
-                        : availableTracks.length === 1
-                          ? "Your assigned camera activity"
-                          : `${availableTracks.length} activities ready for you`}
-                  </h2>
+            <div>
+              <span className="camera-learning-section-label">CAMERA GAME FROM YOUR TEACHER</span>
+              <h2>
+                {programsLoading
+                  ? "Loading your teacher’s activity…"
+                  : availableTracks.length === 0
+                    ? "No camera activity published yet"
+                    : "Your assigned camera activity"}
+              </h2>
+            </div>
+            {programsLoading ? (
+              <div className="camera-learning-activity-grid" style={{ opacity: 0.7 }}>
+                <div style={{ padding: "1.25rem", gridColumn: "1 / -1", textAlign: "center" }}>
+                  <LoaderCircle className="spin" size={28} /> Checking published content…
                 </div>
-                {programsLoading ? (
-                  <div className="camera-learning-activity-grid" style={{ opacity: 0.7 }}>
-                    <div style={{ padding: "1.25rem", gridColumn: "1 / -1", textAlign: "center" }}>
-                      <LoaderCircle className="spin" size={28} /> Checking published content…
-                    </div>
-                  </div>
-                ) : availableTracks.length === 0 ? (
-                  <div className="camera-learning-activity-grid">
-                    <div style={{ padding: "1.25rem", gridColumn: "1 / -1", border: "1px dashed #cbd5e1", borderRadius: "12px", textAlign: "center" }}>
-                      <BookOpenCheck size={28} style={{ marginBottom: 8 }} />
-                      <strong style={{ display: "block" }}>Waiting for your teacher</strong>
-                      <small>Only games your teacher creates and publishes for {grade} · {profile?.section || "your section"} will appear here.</small>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="camera-learning-activity-grid">
-                    {availableTracks.map((track) => {
-                      const Icon = TRACK_ICONS[track.id] || Camera;
-                      const selected = activity === track.id;
-                      return (
-                        <button type="button" key={track.id} className={selected ? "is-selected" : ""} onClick={() => chooseActivity(track.id)}>
-                          <Icon size={24} /><span><strong>{track.label}</strong><small>{track.shortDescription}</small></span>{selected && <CheckCircle2 size={18} />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            )}
-            {focusedMode && (
-              <div style={{ marginBottom: "0.75rem" }}>
-                <span className="camera-learning-section-label">YOUR ACTIVITY</span>
-                <h2 style={{ margin: "0.25rem 0 0" }}>{details.title}</h2>
-                <p style={{ margin: "0.35rem 0 0", opacity: 0.8, fontSize: "0.95rem" }}>{details.description}</p>
+              </div>
+            ) : availableTracks.length === 0 ? (
+              <div className="camera-learning-activity-grid">
+                <div style={{ padding: "1.25rem", gridColumn: "1 / -1", border: "1px dashed #cbd5e1", borderRadius: "12px", textAlign: "center" }}>
+                  <BookOpenCheck size={28} style={{ marginBottom: 8 }} />
+                  <strong style={{ display: "block" }}>Waiting for your teacher</strong>
+                  <small>Only the game your teacher creates and publishes for {grade} · {profile?.section || "your section"} will appear here.</small>
+                </div>
+              </div>
+            ) : (
+              <div className="camera-learning-activity-grid">
+                {availableTracks.map((track) => {
+                  const Icon = TRACK_ICONS[track.id] || Camera;
+                  return (
+                    <button type="button" key={track.id} className="is-selected" disabled aria-current="true" title="This is the game you opened">
+                      <Icon size={24} /><span><strong>{track.label}</strong><small>{track.shortDescription}</small></span><CheckCircle2 size={18} />
+                    </button>
+                  );
+                })}
               </div>
             )}
 
@@ -616,7 +584,13 @@ export default function CameraMathGame({ initialActivity = "math" }) {
         <div className="camera-math-question-card__meta"><span>{question?.skill}</span><b>{grade} · {profile?.section}</b><em>{activity === "math" ? "TEACHER WEEKLY MISSION" : `TEACHER LEVEL ${level} · ${details.shortTitle.toUpperCase()}`}</em></div>
         <div className="camera-math-question-card__main">
           <button type="button" onClick={() => speak(details.reading ? question?.readingText : `${question?.prompt}. Choose from ${question?.choices.join(", ")}.`)} aria-label="Read question aloud"><Volume2 size={20} /></button>
-          <div><small>{details.reading ? "READ CLEARLY" : "SOLVE THE CHALLENGE"}</small><h1>{details.reading ? details.shortTitle : question?.prompt}</h1></div>
+          <div>
+            <small>{details.reading ? "READ CLEARLY" : "SOLVE THE CHALLENGE"}</small>
+            <h1>{details.reading ? details.shortTitle : question?.prompt}</h1>
+            {!details.reading && question?.promptImageUrl ? (
+              <img className="camera-math-prompt-image" src={question.promptImageUrl} alt="Clue" />
+            ) : null}
+          </div>
         </div>
         <div className="camera-math-live-stats">
           <span><Sparkles size={16} /> {score} points</span>
@@ -656,10 +630,14 @@ export default function CameraMathGame({ initialActivity = "math" }) {
       ) : mode === "camera-drag" ? (
         <CameraMathStage
           choices={question?.choices || []}
+          choiceImages={question?.choiceImages || []}
           questionKey={`${question?.id}-${stageKey}`}
           onDrop={submitAnswer}
           disabled={Boolean(feedback)}
           autoStart
+          itemNoun={details.itemNoun}
+          dropTitle={details.dropTitle}
+          dropInstruction={details.dropInstruction}
         />
       ) : (
         <section className="camera-math-classic" aria-label="Classic answer choices">
@@ -667,7 +645,9 @@ export default function CameraMathGame({ initialActivity = "math" }) {
           <div className="camera-math-classic__choices">
             {(question?.choices || []).map((choice, index) => (
               <button type="button" key={`${choice}-${index}`} onClick={() => submitAnswer(choice, { input: "tap" })} disabled={Boolean(feedback)}>
-                <span>{String.fromCharCode(65 + index)}</span><strong>{choice}</strong>
+                <span>{String.fromCharCode(65 + index)}</span>
+                {question?.choiceImages?.[index] ? <img src={question.choiceImages[index]} alt="" className="camera-math-classic__image" /> : null}
+                <strong>{choice}</strong>
               </button>
             ))}
           </div>

@@ -129,8 +129,9 @@ export default function StudentDashboard() {
         setCatalogLoading(false);
       },
       profile.section,
+      profile.classKey,
     );
-  }, [profile?.gradeLevel, profile?.section]);
+  }, [profile?.gradeLevel, profile?.section, profile?.classKey]);
 
   useEffect(() => {
     if (!user?.uid) return undefined;

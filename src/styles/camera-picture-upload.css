@@ -1,0 +1,107 @@
+/* Teacher Camera Studio — picture options */
+.teacher-camera-choice-row {
+  display: grid;
+  gap: 0.55rem;
+  align-items: stretch;
+}
+.teacher-camera-choice-row.has-image {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.teacher-camera-choice-row label {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  margin: 0;
+}
+.teacher-camera-choice-image {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.teacher-camera-choice-image img,
+.teacher-camera-image-preview img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: #fff;
+}
+.teacher-camera-image-field {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 14px;
+  border: 1px dashed rgba(99, 102, 241, 0.35);
+  background: rgba(99, 102, 241, 0.04);
+}
+.teacher-camera-image-field__head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.teacher-camera-image-field__head strong {
+  font-size: 0.92rem;
+}
+.teacher-camera-image-field__head span {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+.teacher-camera-image-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.teacher-camera-image-upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  background: #fff;
+  color: #4338ca;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.teacher-camera-image-upload.is-compact {
+  padding: 0.4rem 0.65rem;
+  font-size: 0.78rem;
+}
+.teacher-camera-image-upload input {
+  display: none;
+}
+
+/* Student play — picture tiles */
+.camera-floating-answer.has-picture {
+  min-width: 7.5rem;
+  padding-top: 0.45rem;
+}
+.camera-floating-answer__image {
+  width: 4.5rem;
+  height: 4.5rem;
+  object-fit: cover;
+  border-radius: 12px;
+  display: block;
+  margin: 0.2rem auto 0.35rem;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18);
+  background: #fff;
+}
+.camera-math-prompt-image {
+  display: block;
+  max-width: min(100%, 320px);
+  max-height: 180px;
+  object-fit: contain;
+  margin-top: 0.75rem;
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #fff;
+}
+.camera-math-classic__image {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 10px;
+  margin-right: 0.5rem;
+}

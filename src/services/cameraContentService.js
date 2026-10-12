@@ -1,4 +1,4 @@
-import { get, ref, update } from "firebase/database";
+import { get, onValue, ref, update } from "firebase/database";
 import { auth, database } from "../firebase/firebaseConfig";
 import { classFields, teacherCanAccessClass } from "../data/schoolClasses";
 import { getLearningWeek } from "../utils/gameEngine";
@@ -52,12 +52,13 @@ export const CAMERA_TRACKS = Object.freeze({
   picture: {
     id: "picture", label: "Picture & Symbol Match", subject: "General", kind: "choice",
     shortDescription: "Match a clue to a picture, symbol, or word",
-    questionLabel: "Picture or symbol clue", questionPlaceholder: "Example: Which symbol shows rainy weather?",
-    answerLabel: "Correct picture, symbol, or word", answerPlaceholder: "🌧️ Rain", choiceLabel: "Picture, emoji, symbol, or word",
+    questionLabel: "Clue or question", questionPlaceholder: "Example: Which picture shows rainy weather?",
+    answerLabel: "Correct match label", answerPlaceholder: "Rain", choiceLabel: "Match option",
     explanationLabel: "Matching feedback", explanationPlaceholder: "Explain the visual clue in clear learner-friendly language.",
     importHint: "clue | answer | option A | B | C | D | feedback", choiceCount: 4, itemNoun: "match",
     dropTitle: "MATCH HERE", dropInstruction: "Drop the best match",
     playInstruction: "Pinch the best picture, symbol, or word and drag it to the match box.", musicTheme: "arcade",
+    supportsImages: true,
   },
   truefalse: {
     id: "truefalse", label: "True or False", subject: "General", kind: "boolean",
@@ -130,26 +131,66 @@ function trackId(value) {
 
 export function createEmptyCameraItems(track = "math") {
   const meta = CAMERA_TRACKS[trackId(track)];
+  const supportsImages = Boolean(meta.supportsImages);
   return Array.from({ length: ITEMS_PER_LEVEL }, (_, index) => (
     meta.kind === "reading"
       ? { id: `item-${index + 1}`, readingText: "", coachingTip: "", skill: "Reading fluency", passAccuracy: 70 }
       : {
-          id: `item-${index + 1}`, prompt: "", answer: "",
-          choices: meta.kind === "boolean" ? ["True", "False"] : Array.from({ length: meta.choiceCount || 4 }, () => ""),
-          explanation: "", skill: meta.kind === "sequence" ? "Sequencing" : "Problem solving",
+          id: `item-${index + 1}`,
+          prompt: "",
+          promptImageUrl: supportsImages ? null : undefined,
+          answer: "",
+          choices: meta.kind === "boolean"
+            ? ["True", "False"]
+            : Array.from({ length: meta.choiceCount || 4 }, () => (
+              supportsImages ? { label: "", imageUrl: null } : ""
+            )),
+          explanation: "",
+          skill: meta.kind === "sequence" ? "Sequencing" : "Problem solving",
         }
   ));
 }
 
+function normalizeChoiceEntry(choice, supportsImages) {
+  if (choice && typeof choice === "object") {
+    const label = text(choice.label ?? choice.text ?? choice.value ?? "", supportsImages ? 120 : 80);
+    const imageUrl = supportsImages ? text(choice.imageUrl || choice.image || "", 120000) : "";
+    return supportsImages ? { label, imageUrl: imageUrl || null } : label;
+  }
+  const label = text(choice, supportsImages ? 120 : 80);
+  return supportsImages ? { label, imageUrl: null } : label;
+}
+
+export function choiceLabel(choice) {
+  if (choice && typeof choice === "object") return text(choice.label ?? choice.text ?? choice.value ?? "", 120);
+  return text(choice, 120);
+}
+
+export function choiceImageUrl(choice) {
+  if (choice && typeof choice === "object") return text(choice.imageUrl || choice.image || "", 120000) || null;
+  return null;
+}
+
 function normalizeInteractiveItem(item, index, track) {
   const meta = CAMERA_TRACKS[trackId(track)];
-  const choices = Array.isArray(item?.choices)
-    ? item.choices.slice(0, meta.choiceCount || 4).map((choice) => text(choice, 80))
-    : [];
-  if (meta.kind === "boolean") choices.splice(0, choices.length, "True", "False");
-  while (choices.length < (meta.choiceCount || 4)) choices.push("");
+  const supportsImages = Boolean(meta.supportsImages);
+  const rawChoices = Array.isArray(item?.choices) ? item.choices.slice(0, meta.choiceCount || 4) : [];
+  let choices = rawChoices.map((choice) => normalizeChoiceEntry(choice, supportsImages));
+  if (meta.kind === "boolean") {
+    choices = supportsImages
+      ? [{ label: "True", imageUrl: null }, { label: "False", imageUrl: null }]
+      : ["True", "False"];
+  }
+  while (choices.length < (meta.choiceCount || 4)) {
+    choices.push(supportsImages ? { label: "", imageUrl: null } : "");
+  }
+  const answer = text(item?.answer, supportsImages ? 120 : 80);
   return {
-    id: `item-${index + 1}`, prompt: text(item?.prompt, 400), answer: text(item?.answer, 80), choices,
+    id: `item-${index + 1}`,
+    prompt: text(item?.prompt, 400),
+    promptImageUrl: supportsImages ? (text(item?.promptImageUrl || "", 120000) || null) : null,
+    answer,
+    choices,
     explanation: text(item?.explanation, 600),
     skill: text(item?.skill, 100) || (meta.kind === "sequence" ? "Sequencing" : "Problem solving"),
   };
@@ -178,14 +219,44 @@ function normalizedSequence(value, separator) {
   return separator === " " ? text(source, 400).toLowerCase() : source.replace(/\s+/g, "").trim().toLowerCase();
 }
 
+/** True when choice options are distinct enough to publish. */
+function choicesAreDistinct(choices, supportsImages = false) {
+  const keys = (choices || []).map((choice) => {
+    const label = choiceLabel(choice).toLowerCase();
+    const imageUrl = choiceImageUrl(choice) || "";
+    // Picture track: same label is OK if the pictures differ.
+    if (supportsImages && imageUrl) return `img:${imageUrl}`;
+    return `label:${label}`;
+  });
+  return keys.length > 0 && new Set(keys).size === keys.length;
+}
+
 export function cameraItemIsComplete(item, track = "math") {
   const normalizedTrack = trackId(track);
   const meta = CAMERA_TRACKS[normalizedTrack];
-  const normalized = meta.kind === "reading" ? normalizeReadingItem(item, 0) : normalizeInteractiveItem(item, 0, normalizedTrack);
-  if (meta.kind === "reading") return normalized.readingText.split(/\s+/).filter(Boolean).length >= 3 && Boolean(normalized.coachingTip);
-  if (!normalized.prompt || !normalized.answer || !normalized.explanation || normalized.choices.some((choice) => !choice)) return false;
-  if (meta.kind === "sequence") return normalizedSequence(normalized.choices, meta.sequenceSeparator) === normalizedSequence(normalized.answer, meta.sequenceSeparator);
-  return normalized.choices.some((choice) => choice.toLowerCase() === normalized.answer.toLowerCase());
+  const normalized = meta.kind === "reading"
+    ? normalizeReadingItem(item, 0)
+    : normalizeInteractiveItem(item, 0, normalizedTrack);
+  if (meta.kind === "reading") {
+    return normalized.readingText.split(/\s+/).filter(Boolean).length >= 3 && Boolean(normalized.coachingTip);
+  }
+  const labels = normalized.choices.map(choiceLabel);
+  if (!normalized.prompt || !normalized.explanation) return false;
+  // Sequence tracks can derive the answer from the ordered blocks when the answer field is left empty.
+  if (meta.kind !== "sequence" && !normalized.answer) return false;
+  if (labels.some((label) => !label)) return false;
+  if (meta.kind === "boolean") {
+    return labels.some((label) => label.toLowerCase() === normalized.answer.toLowerCase());
+  }
+  if (meta.kind === "sequence") {
+    const joined = normalizedSequence(labels, meta.sequenceSeparator);
+    if (!joined) return false;
+    const answerNorm = normalizedSequence(normalized.answer, meta.sequenceSeparator);
+    // Accept when answer is empty (will be filled on save) or when it matches the ordered blocks.
+    return !answerNorm || joined === answerNorm;
+  }
+  // Uniqueness is a soft tip only — never blocks "ready" or publish.
+  return labels.some((label) => label.toLowerCase() === normalized.answer.toLowerCase());
 }
 
 export function validateCameraItems(items, track = "math") {
@@ -193,27 +264,81 @@ export function validateCameraItems(items, track = "math") {
   const meta = CAMERA_TRACKS[normalizedTrack];
   const normalized = normalizeCameraItems(items, normalizedTrack);
   const errors = [];
-  normalized.forEach((item, index) => {
-    if (meta.kind === "reading") {
-      if (item.readingText.split(/\s+/).filter(Boolean).length < 3) errors.push(`Reading item ${index + 1} needs at least three words.`);
+  const warnings = [];
+  const itemName = (index) => {
+    const noun = meta.itemNoun || "Activity";
+    return `${noun.charAt(0).toUpperCase()}${noun.slice(1)} ${index + 1}`;
+  };
+
+  if (meta.kind === "reading") {
+    normalized.forEach((item, index) => {
+      if (item.readingText.split(/\s+/).filter(Boolean).length < 3) {
+        errors.push(`Reading item ${index + 1} needs at least three words.`);
+      }
       if (!item.coachingTip) errors.push(`Reading item ${index + 1} needs a coaching tip.`);
-      return;
+    });
+  } else {
+    normalized.forEach((item, index) => {
+      const name = itemName(index);
+      const labels = item.choices.map(choiceLabel);
+      if (!item.prompt) errors.push(`${name} needs a question or clue.`);
+      if (meta.kind !== "boolean") {
+        if (labels.some((label) => !label)) {
+          errors.push(`${name} needs ${meta.choiceCount} complete ${String(meta.choiceLabel || "choice").toLowerCase()} labels.`);
+        }
+        if (meta.kind !== "sequence" && !choicesAreDistinct(item.choices, Boolean(meta.supportsImages))) {
+          if (meta.supportsImages) {
+            warnings.push(`${name}: different pictures or labels help students tell options apart.`);
+          } else {
+            warnings.push(`${name}: different choice labels are recommended so options are not confusing.`);
+          }
+        }
+      }
+      if (meta.kind === "sequence") {
+        if (labels.every(Boolean)) {
+          // Always keep answer in sync with the ordered blocks when they are complete.
+          // Teachers may still edit the answer field; a mismatch will surface as an error.
+          if (!item.answer) {
+            item.answer = labels.join(meta.sequenceSeparator || " ");
+          }
+        }
+        if (normalizedSequence(labels, meta.sequenceSeparator) !== normalizedSequence(item.answer, meta.sequenceSeparator)) {
+          const joinedPreview = labels.join(meta.sequenceSeparator === "" ? "" : " ");
+          errors.push(`${name}: the ordered blocks join to "${joinedPreview}" but the correct answer is "${item.answer || "(empty)"}". Make them match (blocks are the pieces the student arranges).`);
+        }
+      } else {
+        if (!item.answer) errors.push(`${name} needs a correct answer.`);
+        else if (!labels.some((label) => label.toLowerCase() === item.answer.toLowerCase())) {
+          errors.push(`${name} must include the correct answer among its choices.`);
+        }
+      }
+      if (!item.explanation) errors.push(`${name} needs feedback or an explanation.`);
+      if (meta.supportsImages) {
+        const withImages = item.choices.filter((choice) => choiceImageUrl(choice)).length;
+        if (withImages === 0) {
+          warnings.push(`${name}: add pictures to the options so students can match visually (emoji/text still works).`);
+        }
+      }
+    });
+  }
+
+  const signatureOwners = new Map();
+  const duplicateIndexes = new Set();
+  normalized.forEach((item, index) => {
+    const signature = text(meta.kind === "reading" ? item.readingText : item.prompt, 700).toLowerCase();
+    if (!signature) return;
+    if (signatureOwners.has(signature)) {
+      duplicateIndexes.add(signatureOwners.get(signature));
+      duplicateIndexes.add(index + 1);
+    } else {
+      signatureOwners.set(signature, index + 1);
     }
-    const itemName = `${meta.label} item ${index + 1}`;
-    if (!item.prompt) errors.push(`${itemName} needs a question or clue.`);
-    if (!item.answer) errors.push(`${itemName} needs a correct answer.`);
-    if (item.choices.some((choice) => !choice)) errors.push(`${itemName} needs ${meta.choiceCount} complete ${meta.choiceLabel.toLowerCase()} fields.`);
-    if (meta.kind !== "sequence" && new Set(item.choices.map((choice) => choice.toLowerCase())).size !== item.choices.length) errors.push(`${itemName} must use different choices.`);
-    if (meta.kind === "sequence") {
-      if (normalizedSequence(item.choices, meta.sequenceSeparator) !== normalizedSequence(item.answer, meta.sequenceSeparator)) errors.push(`${itemName} blocks must be entered in the same order as the complete correct answer.`);
-    } else if (!item.choices.some((choice) => choice.toLowerCase() === item.answer.toLowerCase())) {
-      errors.push(`${itemName} must include the correct answer among its choices.`);
-    }
-    if (!item.explanation) errors.push(`${itemName} needs feedback or an explanation.`);
   });
-  const signatures = normalized.map((item) => text(meta.kind === "reading" ? item.readingText : item.prompt, 700).toLowerCase()).filter(Boolean);
-  if (new Set(signatures).size !== signatures.length) errors.push("Every activity in this level must use different content.");
-  return { valid: errors.length === 0, errors, items: normalized };
+  if (duplicateIndexes.size > 0) {
+    const list = [...duplicateIndexes].sort((a, b) => a - b).join(", ");
+    warnings.push(`Tip: activities ${list} share the same statement. Different content is recommended but not required to publish.`);
+  }
+  return { valid: errors.length === 0, errors, warnings, items: normalized };
 }
 
 function programPath(classKey, track, level) {
@@ -277,14 +402,8 @@ export async function saveTeacherCameraProgram(teacherProfile, input) {
     get(ref(database, `cameraPrograms/${targetClass.classKey}/${track}`)),
   ]);
   const existing = existingSnapshot.exists() ? existingSnapshot.val() : {};
-  if (status === "published" && trackSnapshot.exists()) {
-    const currentSignatures = new Set(validation.items.map((item) => text(meta.kind === "reading" ? item.readingText : item.prompt, 700).toLowerCase()).filter(Boolean));
-    const duplicate = Object.entries(trackSnapshot.val()).find(([levelKey, program]) => {
-      if (levelKey === `level-${level}` || !program?.questions) return false;
-      return normalizeCameraItems(program.questions, track).some((item) => currentSignatures.has(text(meta.kind === "reading" ? item.readingText : item.prompt, 700).toLowerCase()));
-    });
-    if (duplicate) throw new Error(`This level repeats content already used in Level ${Number(duplicate[0].replace(/\D/g, ""))}. Use different activities for every level.`);
-  }
+  // Cross-level content reuse is allowed. Teachers may republish or share similar
+  // statements across levels; the student still only plays the exact level opened.
 
   const now = Date.now();
   const week = getLearningWeek();
@@ -312,17 +431,51 @@ export async function saveTeacherCameraProgram(teacherProfile, input) {
 }
 
 /** Permanently remove a camera level for a class + track + level (draft and published). */
-export async function deleteTeacherCameraProgram(teacherProfile, { classKey, track, level } = {}) {
+export async function deleteTeacherCameraProgram(teacherProfile, { classKey, track, level, grade, section } = {}) {
   const currentUser = auth.currentUser;
   if (!currentUser) throw new Error("Sign in again before deleting camera content.");
   const normalizedTrack = trackId(track);
   const normalizedLevel = integer(level, 0, 1, 10);
-  const key = text(classKey, 80);
+
+  // Resolve classKey + grade/section. Callers may pass classKey only, or grade+section.
+  let key = text(classKey, 80);
+  let gradeValue = grade;
+  let sectionValue = section;
+  if (key && (!gradeValue || !sectionValue)) {
+    // classKey format: "grade-5__section-1"
+    const parts = key.split("__");
+    if (parts.length >= 2) {
+      const gradePart = parts[0].replace(/^grade-?/i, "");
+      const sectionPart = parts.slice(1).join("__").replace(/^section-?/i, "");
+      gradeValue = gradeValue || (gradePart ? `Grade ${gradePart}` : "");
+      sectionValue = sectionValue || (sectionPart ? `Section ${sectionPart}` : "");
+    }
+  }
+  if (!key && gradeValue && sectionValue) {
+    try {
+      key = classFields(gradeValue, sectionValue).classKey;
+    } catch {
+      key = "";
+    }
+  }
   if (!key) throw new Error("Choose the class that owns this camera level.");
-  if (!teacherCanAccessClass(teacherProfile, key) && teacherProfile?.teachingScope !== "schoolwide") {
+
+  const relativePath = programPath(key, normalizedTrack, normalizedLevel);
+  const existingSnap = await get(ref(database, `cameraPrograms/${relativePath}`));
+  const existing = existingSnap.exists() ? existingSnap.val() : null;
+
+  // Access check expects (profile, grade, section) — never the raw classKey string.
+  // Creator can always delete their own content (even if class assignment changed later).
+  const isCreator = Boolean(existing?.teacherId && existing.teacherId === currentUser.uid);
+  const canAccess =
+    isCreator
+    || teacherProfile?.teachingScope === "schoolwide"
+    || teacherProfile?.role === "admin"
+    || teacherCanAccessClass(teacherProfile, gradeValue, sectionValue);
+  if (!canAccess) {
     throw new Error("You can only delete camera content for classes assigned to you.");
   }
-  const relativePath = programPath(key, normalizedTrack, normalizedLevel);
+
   await update(ref(database), {
     [`cameraPrograms/${relativePath}`]: null,
     [`cameraPublished/${relativePath}`]: null,
@@ -341,17 +494,163 @@ export async function getPublishedCameraProgramsForStudent(profile) {
   }))).filter((program) => program?.status === "published" && isCameraProgramActive(program, now));
 }
 
+
+/**
+ * Realtime subscription to published camera programs for a student class.
+ * Emits whenever a teacher publishes, edits, or deletes content for that class.
+ */
+export function subscribePublishedCameraProgramsForStudent(classKey, onData, onError) {
+  const key = text(classKey, 80);
+  if (!key) {
+    onData([]);
+    return () => {};
+  }
+  let stopped = false;
+  let timer = null;
+  function emit(programs) {
+    if (stopped) return;
+    clearTimeout(timer);
+    const now = Date.now();
+    const active = (programs || []).filter((program) => isCameraProgramActive(program, now));
+    onData(active);
+    const boundaries = active
+      .map((program) => Number(program.expiresAt || 0))
+      .filter((time) => Number.isFinite(time) && time > now);
+    if (boundaries.length) {
+      timer = setTimeout(() => emit(programs), Math.min(2147483647, Math.max(20, Math.min(...boundaries) - now + 20)));
+    }
+  }
+  const unsubscribe = onValue(
+    ref(database, `cameraPublished/${key}`),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        emit([]);
+        return;
+      }
+      const programs = Object.entries(snapshot.val()).flatMap(([track, levels]) =>
+        Object.entries(levels || {}).map(([levelKey, record]) =>
+          normalizeProgram(record, {
+            classKey: key,
+            track,
+            level: Number(String(levelKey).replace(/\D/g, "")) || 1,
+          }),
+        ),
+      ).filter((program) => program?.status === "published");
+      emit(programs);
+    },
+    (error) => {
+      emit([]);
+      onError?.(error);
+    },
+  );
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+    unsubscribe();
+  };
+}
+
+/** Track IDs that currently have at least one active published level for the class. */
+export function activeCameraTracksFromPrograms(programs = []) {
+  const tracks = new Set();
+  const now = Date.now();
+  for (const program of programs) {
+    if (program?.status === "published" && isCameraProgramActive(program, now) && program.track) {
+      tracks.add(trackId(program.track));
+    }
+  }
+  return tracks;
+}
+
+/**
+ * Enrich / filter system camera catalog cards so only tracks with live teacher
+ * content appear for the student.
+ */
+export function filterSystemCameraCatalog(systemItems, programs = []) {
+  const byTrack = new Map();
+  const now = Date.now();
+  for (const program of programs) {
+    if (!program || program.status !== "published" || !isCameraProgramActive(program, now)) continue;
+    const track = trackId(program.track);
+    const list = byTrack.get(track) || [];
+    list.push(program);
+    byTrack.set(track, list);
+  }
+  return (systemItems || [])
+    .filter((item) => {
+      if (item?.source !== "system" || item?.type !== "game") return true;
+      const track = certificateTrackFromCatalogId(item.id);
+      return track && byTrack.has(track);
+    })
+    .map((item) => {
+      if (item?.source !== "system" || item?.type !== "game") return item;
+      const track = certificateTrackFromCatalogId(item.id);
+      const levels = (byTrack.get(track) || []).slice().sort((a, b) => Number(a.level) - Number(b.level));
+      if (!levels.length) return item;
+      const latest = levels.reduce((best, current) =>
+        Number(current.updatedAt || 0) >= Number(best.updatedAt || 0) ? current : best,
+      levels[0]);
+      return {
+        ...item,
+        publishedLevelCount: levels.length,
+        publishedLevels: levels.map((level) => Number(level.level)),
+        teacherId: latest.teacherId || item.teacherId || null,
+        teacherName: latest.teacherName || item.teacherName || null,
+        title: levels.length === 1 && latest.title ? latest.title : item.title,
+        updatedAt: Math.max(...levels.map((level) => Number(level.updatedAt || 0)), Number(item.updatedAt || 0)),
+      };
+    });
+}
+
+function certificateTrackFromCatalogId(id) {
+  const value = String(id || "");
+  // ids: camera-math-grade-5, camera-truefalse-grade-5, camera-reading-english-grade-5
+  const match = value.match(/^camera-(?:reading-)?([a-z]+)(?:-[a-z]+)?-grade-/i);
+  if (!match) return "";
+  const raw = match[1].toLowerCase();
+  if (raw === "reading") return "english";
+  return trackId(raw);
+}
+
 export function cameraProgramQuestions(program) {
   if (!program) return [];
   const track = trackId(program.track);
   const meta = CAMERA_TRACKS[track];
   return normalizeCameraItems(program.questions, track).map((item, index) => {
-    const shared = { id: `${program.classKey}-${track}-level-${program.level}-${index + 1}`, cameraTrack: track, cameraKind: meta.kind, level: program.level };
-    if (meta.kind === "reading") return { ...shared, type: "manual", prompt: "Read this aloud", readingText: item.readingText, answer: item.readingText, choices: [], explanation: item.coachingTip, skill: item.skill, language: "english", passAccuracy: item.passAccuracy };
+    const shared = {
+      id: `${program.classKey}-${track}-level-${program.level}-${index + 1}`,
+      cameraTrack: track,
+      cameraKind: meta.kind,
+      level: program.level,
+    };
+    if (meta.kind === "reading") {
+      return {
+        ...shared,
+        type: "manual",
+        prompt: "Read this aloud",
+        readingText: item.readingText,
+        answer: item.readingText,
+        choices: [],
+        explanation: item.coachingTip,
+        skill: item.skill,
+        language: "english",
+        passAccuracy: item.passAccuracy,
+      };
+    }
+    const labels = (item.choices || []).map(choiceLabel);
+    const choiceImages = (item.choices || []).map(choiceImageUrl);
     return {
-      ...shared, type: meta.kind === "sequence" ? "text" : "choice", prompt: item.prompt, answer: item.answer,
-      choices: item.choices, acceptedAnswers: meta.kind === "sequence" ? [item.answer] : undefined,
-      explanation: item.explanation, skill: item.skill, sequenceSeparator: meta.sequenceSeparator,
+      ...shared,
+      type: meta.kind === "sequence" ? "text" : "choice",
+      prompt: item.prompt,
+      promptImageUrl: item.promptImageUrl || null,
+      answer: item.answer,
+      choices: labels,
+      choiceImages: meta.supportsImages ? choiceImages : undefined,
+      acceptedAnswers: meta.kind === "sequence" ? [item.answer] : undefined,
+      explanation: item.explanation,
+      skill: item.skill,
+      sequenceSeparator: meta.sequenceSeparator,
     };
   });
 }

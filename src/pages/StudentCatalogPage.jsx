@@ -73,8 +73,9 @@ export default function StudentCatalogPage({ type }) {
         setLoading(false);
       },
       profile.section,
+      profile.classKey,
     );
-  }, [profile?.gradeLevel, profile?.section, title, type]);
+  }, [profile?.gradeLevel, profile?.section, profile?.classKey, title, type]);
 
   useEffect(() => {
     if (!user?.uid) return undefined;
